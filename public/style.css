@@ -387,3 +387,14 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .timer.paused { opacity: 0.55; }
 .end-card h2:focus { outline: none; }
 .word-area .slots { max-width: 100%; flex-wrap: wrap; justify-content: center; }
+
+.tgroup.pal.locked { opacity: 0.35; pointer-events: none; }
+
+/* ---------- chaos: guesser-only views (the artist sees the real board) ---------- */
+.board-wrap.v-fog #board { filter: blur(var(--fog, 12px)); }
+.board-wrap.v-negative #board { filter: invert(1) hue-rotate(180deg); }
+.board-wrap.v-quake #board { animation: quake 0.35s infinite; }
+.board-wrap.v-spin #board { animation: spin 14s linear infinite; }
+@keyframes quake { 0%, 100% { transform: translate(0, 0); } 20% { transform: translate(-7px, 4px) rotate(-1deg); } 40% { transform: translate(6px, -5px); } 60% { transform: translate(-4px, -3px) rotate(1deg); } 80% { transform: translate(5px, 5px); } }
+@keyframes spin { from { transform: scale(0.78) rotate(0deg); } to { transform: scale(0.78) rotate(360deg); } }
+

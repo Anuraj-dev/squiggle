@@ -1,5 +1,5 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, jitterPts, podiumGroups } from './shared.js';
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, LAG_MS, MEMORY_STROKES } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -293,9 +293,10 @@ function onMsg(m) {
 
 function rejectText(reason) {
   return ({
-    tool: 'Not with this chaos!',
+    tool: 'That tool is off this turn!',
     budget: 'The canvas is full',
     onestroke: 'One stroke only!',
+    locked: 'Not with this chaos!',
     paused: 'Game is paused',
   })[reason] || 'Oops — board resynced';
 }
@@ -308,19 +309,39 @@ const fxc = fx.getContext('2d');
 let strokes = [], dirty = true, lastFade = 0;
 
 const gameMs = () => clientClock(S, stateRecvAt, performance.now()).gameMs;
-const fading = () => S?.state === 'drawing' && is(S.chaos, 'fade');
-const renderOpts = () => ({ chaos: S?.chaos, gameMs: gameMs(), fade: fading() });
+const liveChaos = (id) => S?.state === 'drawing' && is(S.chaos, id);
+// Guesser-only chaos views; the artist always sees the real board.
+const guesserView = (id) => liveChaos(id) && S.drawerId !== myId;
+const fading = () => liveChaos('fade');
+// Modes whose picture changes with time, not just with new strokes.
+const timed = () => fading() || guesserView('laggy');
+const renderOpts = () => ({
+  chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
+  memory: liveChaos('memory') ? MEMORY_STROKES : 0,
+  lagMs: guesserView('laggy') ? LAG_MS : 0,
+});
 const markDirty = () => { dirty = true; };
 
-// Repaints the board when something changed; ghost ink repaints ~10×/s.
+const pixelCv = document.createElement('canvas');
+pixelCv.width = W / 12; pixelCv.height = H / 12;
+// Repaints the board when something changed; timed modes repaint ~10×/s.
 function present() {
-  if (!dirty && !(fading() && performance.now() - lastFade > 100)) return;
+  if (!dirty && !(timed() && performance.now() - lastFade > 100)) return;
   paintPaper(ctx, strokes, renderOpts());
+  if (guesserView('pixel')) {
+    const pc = pixelCv.getContext('2d');
+    pc.drawImage(board, 0, 0, pixelCv.width, pixelCv.height);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(pixelCv, 0, 0, W, H);
+    ctx.restore();
+  }
   dirty = false;
   lastFade = performance.now();
 }
+// Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || fading()) markDirty();
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
   else drawStroke(ctx, s, from, renderOpts());
 }
 
@@ -329,7 +350,8 @@ const canDraw = () => !!S && !S.paused && (S.state === 'lobby' || (S.state === '
 const nid = () => Math.random().toString(36).slice(2, 10);
 const turnChaos = () => (S?.state === 'drawing' ? S.chaos : null);
 const shaky = () => is(turnChaos(), 'shaky');
-const effectiveTool = () => (is(turnChaos(), 'onestroke') ? 'pen' : tool);
+const TOOL_ORDER = ['pen', 'line', 'rect', 'ellipse', 'fill', 'eraser'];
+const effectiveTool = () => (allowedTool(turnChaos(), tool) ? tool : TOOL_ORDER.find((t) => allowedTool(turnChaos(), t)));
 
 function toXY(e) {
   const r = board.getBoundingClientRect();
@@ -359,7 +381,7 @@ function flush() {
 function refuse() {
   const tw = turnChaos();
   if (is(tw, 'onestroke') && strokes.some((s) => s.by === myId)) return '➰ One stroke only — that was it!';
-  if (!allowedTool(tw, effectiveTool())) return 'No fill with ghost ink 👻';
+  if (!allowedTool(tw, effectiveTool())) return 'That tool is off this turn';
   return null;
 }
 
@@ -438,7 +460,8 @@ function drawFx() {
     fxc.save();
     fxc.lineWidth = 1.5;
     fxc.strokeStyle = 'rgba(29,27,26,.6)';
-    fxc.beginPath(); fxc.arc(hover[0], hover[1], Math.max((is(turnChaos(), 'tiny') ? 3 : size) / 2, 2), 0, Math.PI * 2); fxc.stroke();
+    const r = is(turnChaos(), 'tiny') ? 3 : is(turnChaos(), 'giant') ? 44 : size;
+    fxc.beginPath(); fxc.arc(hover[0], hover[1], Math.max(r / 2, 2), 0, Math.PI * 2); fxc.stroke();
     fxc.restore();
   }
 }
@@ -447,7 +470,7 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select') || document.querySelector('dialog[open]')) return;
   if (S?.state === 'choosing' && S.choices && /^[1-5]$/.test(e.key)) { act('choose', { i: +e.key - 1 }); return; }
   if (!canDraw()) return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); act('undo'); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (canUndo(turnChaos())) act('undo'); return; }
   const map = { b: 'pen', p: 'pen', e: 'eraser', f: 'fill', g: 'fill', l: 'line', r: 'rect', o: 'ellipse' };
   if (map[e.key] && !e.ctrlKey && !e.metaKey) { tool = map[e.key]; renderToolbar(); }
   if (e.key === '[' || e.key === ']') {
@@ -507,6 +530,7 @@ function render(prev) {
   if (tw) $('#modChip').textContent = `${tw.icon} ${tw.name}`;
   if (tw) $('#modChip').title = tw.desc;
   $('#blind').hidden = !(is(tw, 'blind') && isDrawer);
+  for (const id of ['fog', 'quake', 'spin', 'negative']) $('#boardWrap').classList.toggle(`v-${id}`, guesserView(id));
   const pause = $('#pauseBanner');
   pause.hidden = !S.paused;
   if (S.paused) pause.textContent = `⏸️ ${S.paused.reason || 'Paused'}`;
@@ -665,8 +689,9 @@ function renderToolbar() {
   const lobby = S.state === 'lobby';
   const tw = turnChaos();
   const active = effectiveTool();
-  const tiny = is(tw, 'tiny');
-  const one = is(tw, 'onestroke');
+  const sizeLock = is(tw, 'tiny') ? SIZES[0] : is(tw, 'giant') ? SIZES.at(-1) : null;
+  const colorLock = is(tw, 'onecolor') || is(tw, 'randomink') || is(tw, 'rainbow');
+  const locked = !lobby && !canUndo(tw);
   const solved = S.players.some((p) => p.guessed);
   const host = S.hostId === myId;
   const key = JSON.stringify([active, size, color, S.seq, S.state, host, solved, tw?.id]);
@@ -676,19 +701,19 @@ function renderToolbar() {
     class: `tbtn${on ? ' on' : ''}`, title: label, 'aria-label': label, 'aria-pressed': String(!!on), disabled: !!disabled, onclick,
   }, svg(name));
   const tools = [['pen', 'Pen (B)'], ['eraser', 'Eraser (E)'], ['fill', 'Fill (F)'], ['line', 'Line (L)'], ['rect', 'Rectangle (R)'], ['ellipse', 'Ellipse (O)']];
-  const effSize = tiny ? SIZES[0] : size;
+  const effSize = sizeLock ?? size;
   fill(bar,
     h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Tools' }, tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
       h('span', { class: 'tdiv' }),
-      tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), one),
+      tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), locked),
       lobby ? (host ? tb('trash', 'Clear', false, () => act('clear')) : null)
-        : tb('trash', 'Clear canvas', false, () => { if (confirm('Clear the whole canvas?')) act('clear'); }, one),
+        : tb('trash', 'Clear canvas', false, () => { if (confirm('Clear the whole canvas?')) act('clear'); }, locked),
       !lobby && !solved ? tb('skip', 'Skip this word', false, () => { if (confirm('Skip your turn?')) act('skip'); }) : null),
     h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
       class: `tbtn sz${effSize === sz ? ' on' : ''}`, 'aria-label': `Brush size ${sz}`, 'aria-pressed': String(effSize === sz),
-      disabled: tiny, onclick: () => { size = sz; renderToolbar(); },
+      disabled: sizeLock != null, onclick: () => { size = sz; renderToolbar(); },
     }, h('span', { class: 'size-dot', style: `width:${Math.max(4, sz * 0.5)}px;height:${Math.max(4, sz * 0.5)}px` })))),
-    h('div', { class: 'tgroup pal', role: 'group', 'aria-label': 'Colors' },
+    h('div', { class: `tgroup pal${colorLock ? ' locked' : ''}`, role: 'group', 'aria-label': 'Colors', title: colorLock ? 'This chaos picks the color' : null },
       h('div', { class: 'palette' }, PALETTE.map((c) => h('button', {
         class: `sw${color === c ? ' on' : ''}`, style: `background:${c}`, 'aria-label': `Color ${c}`, 'aria-pressed': String(color === c),
         onclick: () => { color = c; if (tool === 'eraser') tool = 'pen'; renderToolbar(); },
@@ -836,6 +861,8 @@ function tick() {
   const now = performance.now();
   if (inGame()) {
     const { left } = clientClock(S, stateRecvAt, now);
+    // Foggy Glasses: the blur clears as the turn runs down.
+    if (guesserView('fog')) $('#boardWrap').style.setProperty('--fog', `${(14 * (S.phaseLen ? left / S.phaseLen : 0)).toFixed(1)}px`);
     const sec = Math.ceil(left / 1000);
     $('#timer .prog').style.strokeDashoffset = String(119.4 * (1 - (S.phaseLen ? left / S.phaseLen : 0)));
     if (sec !== lastSec) {
