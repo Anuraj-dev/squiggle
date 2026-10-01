@@ -439,3 +439,31 @@ test('speedrun halves the turn; clear wipes the canvas; blank turns skip the gal
   expect(ctx.room.state).toBe('reveal');
   expect(ctx.room.gallery).toEqual([]);
 });
+
+test('host settings: word choices, hints, difficulty and chaos level', () => {
+  const ctx = setup(2, { customOnly: false, customWords: '', wordChoices: 5, hints: 4, difficulty: 'hard', chaos: 'always' });
+  const s = ctx.room.settings;
+  expect([s.wordChoices, s.hints, s.difficulty, s.chaos]).toEqual([5, 4, 'hard', 'always']);
+  ctx.ss[0].do('start');
+  const drawer = ctx.ss.find((x) => x.id === ctx.room.drawerId);
+  expect(drawer.state().choices.length).toBe(5);
+  expect(drawer.state().choices.every((c) => c.diff === 'hard')).toBe(true);
+  ctx.room.chaos = tw('mirror');
+  drawer.act('choose', { i: 0 });
+  const letters = [...ctx.room.word].filter((ch) => /[a-z0-9]/i.test(ch)).length;
+  expect(ctx.room.hintPlan.length).toBe(Math.min(4, Math.floor(letters / 2)));
+  // Out-of-range values clamp; unknown values fall back.
+  ctx.room.toLobby();
+  ctx.ss[0].do('settings', { settings: { wordChoices: 99, hints: -3, difficulty: 'insane', chaos: 'max' } });
+  const t = ctx.room.settings;
+  expect([t.wordChoices, t.hints, t.difficulty, t.chaos]).toEqual([5, 0, 'mix', 'off']);
+});
+
+test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
+  const ctx = setup(2, { hints: 5 });
+  ctx.ss[0].do('start');
+  expect(ctx.room.chaos).toBeNull();
+  ctx.room.chaos = tw('nohints');
+  ctx.ss.find((x) => x.id === ctx.room.drawerId).act('choose', { i: 0 });
+  expect(ctx.room.hintPlan).toEqual([]);
+});

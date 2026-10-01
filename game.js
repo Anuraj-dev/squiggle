@@ -5,7 +5,7 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
+  CHAOS_LEVELS, clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
 } from './public/shared.js';
@@ -16,12 +16,15 @@ export const clock = {
   clear: (t) => clearTimeout(t),
 };
 
-const DEFAULTS = { rounds: 3, drawTime: 80, chaos: false, customWords: [], customOnly: false };
-const WORD_CHOICES = 3, HINTS = 2, MAX_PLAYERS = 12;
+const DEFAULTS = {
+  rounds: 3, drawTime: 80, chaos: 'off', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+};
+const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
 const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'clear']);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DIFFS = ['easy', 'medium', 'hard'];
+const DIFFICULTIES = ['mix', ...DIFFS];
 export const rooms = new Map();
 const rand = (a) => a[Math.floor(Math.random() * a.length)];
 const shuffle = (a) => shuffleIn(a, Math.random);
@@ -76,6 +79,7 @@ export class Room {
     this.gallery = [];
     this.used = new Set();
     this.chaos = null;
+    this.lastChaosId = null;
     this.banned = new Set();
     this.reveal = null;
     this.endData = null;
@@ -307,8 +311,10 @@ export class Room {
     this.guessed.clear();
     this.lateSolved.clear();
     const seed = (Math.random() * 0xffffffff) >>> 0 || 1;
-    this.chaos = this.settings.chaos ? pickChaos(seed, this.chaos?.id) : null;
-    this.choices = this.pickWords(WORD_CHOICES);
+    const level = this.settings.chaos;
+    this.chaos = level === 'always' || (level === 'some' && Math.random() < 0.5) ? pickChaos(seed, this.lastChaosId) : null;
+    if (this.chaos) this.lastChaosId = this.chaos.id;
+    this.choices = this.pickWords(this.settings.wordChoices);
     this.phase(CHOOSE_MS, () => this.choose(Math.floor(Math.random() * this.choices.length)));
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
     this.updatePause();
@@ -318,7 +324,7 @@ export class Room {
   // on a reroll) only when nothing else exists. Custom-only never falls back
   // to the default bank.
   pickWords(n, avoid = []) {
-    const { customWords, customOnly } = this.settings;
+    const { customWords, customOnly, difficulty } = this.settings;
     const avoidKeys = new Set(avoid.map(canonKey));
     const usedKeys = new Set([...this.used].map(canonKey));
     const rank = (w) => (avoidKeys.has(canonKey(w)) ? 2 : usedKeys.has(canonKey(w)) ? 1 : 0);
@@ -335,7 +341,8 @@ export class Room {
     const cDiff = 'medium';
     const customList = ordered(customWords);
     const freshCustom = () => customList.filter((w) => !keys.has(canonKey(w)) && rank(w) === 0);
-    const diffs = n >= 3 ? DIFFS : shuffle(DIFFS);
+    const pool = difficulty === 'mix' ? DIFFS : [difficulty];
+    const diffs = n >= 3 ? pool : shuffle(pool);
     for (let i = 0; i < n; i++) {
       if (customOnly) { if (!take1(customList, cDiff)) break; continue; }
       if (freshCustom().length && Math.random() < 0.5 && take1(freshCustom(), cDiff)) continue;
@@ -363,7 +370,7 @@ export class Room {
     this.scoreLen = ms;
     this.phase(ms, () => this.endTurn('time'));
     const letters = [...c.word].map((ch, idx) => (/[a-z0-9]/i.test(ch) ? idx : -1)).filter((idx) => idx >= 0);
-    const hints = is(this.chaos, 'nohints') ? 0 : HINTS;
+    const hints = is(this.chaos, 'nohints') ? 0 : this.settings.hints;
     this.hintPlan = shuffle(letters).slice(0, Math.min(hints, Math.floor(letters.length / 2)));
     this.scheduleHints();
     this.system(`✏️ ${this.players.get(this.drawerId).name} is drawing`, 'turn');
@@ -582,7 +589,10 @@ const handlers = {
     room.settings = {
       rounds: clamp(s.rounds, 1, 10, DEFAULTS.rounds),
       drawTime: clamp(s.drawTime, 20, 240, DEFAULTS.drawTime),
-      chaos: !!s.chaos,
+      chaos: CHAOS_LEVELS.includes(s.chaos) ? s.chaos : s.chaos === true ? 'always' : 'off',
+      wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),
+      hints: clamp(s.hints, 0, 5, DEFAULTS.hints),
+      difficulty: DIFFICULTIES.includes(s.difficulty) ? s.difficulty : 'mix',
       customWords: s.customWords == null ? room.settings.customWords : dedupeCustom(s.customWords),
       customOnly: !!s.customOnly,
     };
@@ -596,7 +606,7 @@ const handlers = {
   reroll(room, p, m) {
     if (p.id !== room.drawerId || room.state !== 'choosing' || m.seq !== room.turnSeq || room.rerolled || room.pausedAt) return;
     const prev = room.choices.map((c) => canonKey(c.word));
-    const next = room.pickWords(WORD_CHOICES, room.choices.map((c) => c.word));
+    const next = room.pickWords(room.settings.wordChoices, room.choices.map((c) => c.word));
     if (next.every((c) => prev.includes(canonKey(c.word)))) return room.send(p, 'toast', { text: 'No other words available to swap in.' });
     room.rerolled = true;
     room.choices = next;

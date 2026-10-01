@@ -1,5 +1,5 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, LAG_MS, MEMORY_STROKES } from './shared.js';
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -621,11 +621,19 @@ function buildReveal() {
 }
 
 const ROUNDS = [1, 2, 3, 4, 5, 6, 8, 10];
-const TIMES = [40, 60, 80, 100, 120, 150];
+const TIMES = [30, 40, 60, 80, 100, 120, 150, 180, 240];
+const CHOICES = [1, 2, 3, 4, 5];
+const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
+const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
+const CHAOS_OPTS = { off: 'Off', some: 'Sometimes', always: 'Every turn' };
+const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos'];
 let wordsT = null;
 function readSettings() {
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
-  const out = { rounds: +q('rounds').value, drawTime: +q('drawTime').value, chaos: q('chaos').checked, customOnly: q('customOnly').checked };
+  const out = {
+    rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
+    difficulty: q('difficulty').value, chaos: q('chaos').value, customOnly: q('customOnly').checked,
+  };
   if (q('customWords')) out.customWords = q('customWords').value;
   return out;
 }
@@ -638,12 +646,16 @@ function buildLobby() {
     h('div', { class: 'lobby-head' },
       h('button', { class: 'btn primary', text: `🔗 Invite friends · ${S.code}`, onclick: copyInvite }),
       h('button', { class: 'btn ghost', text: '✏️ Doodle', title: 'Hide settings and doodle while you wait', onclick: () => { lobbyMinimized = true; render(S); } })),
-    h('div', { class: 'row' },
+    h('div', { class: 'grid' },
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
-      h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`))),
-    h('label', { class: 'toggle' },
-      h('input', { type: 'checkbox', name: 'chaos', onchange: pushSettings }),
-      h('span', {}, h('b', { text: '🌀 Chaos' }), h('small', { text: 'Every turn gets one silly rule — mirror, blindfold, one line, ghost ink…' }))),
+      h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
+      h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
+      h('label', { class: 'field' }, h('span', { text: 'Hints' }), select('hints', HINT_COUNTS, (v) => (v ? `${v} letter${v > 1 ? 's' : ''}` : 'None'))),
+      h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), select('difficulty', Object.keys(DIFFICULTIES), (v) => DIFFICULTIES[v])),
+      h('label', { class: 'field' }, h('span', { text: '💥 Chaos' }), select('chaos', Object.keys(CHAOS_OPTS), (v) => CHAOS_OPTS[v]))),
+    h('details', { class: 'custom chaos-list' },
+      h('summary', { text: `💥 ${CHAOS_MODES.length} chaos modes` }),
+      h('ul', {}, CHAOS_MODES.map((c) => h('li', { title: c.desc }, h('b', { text: `${c.icon} ${c.name}` }), h('small', { text: c.desc }))))),
     h('details', { class: 'custom' },
       h('summary', { name: 'customSum' }),
       host ? h('textarea', { name: 'customWords', placeholder: 'inside jokes, friends’ names, comma separated…', maxLength: 6000,
@@ -659,15 +671,14 @@ function syncLobby() {
   const host = S.hostId === myId;
   const active = document.activeElement;
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
-  for (const k of ['rounds', 'drawTime']) {
+  for (const k of SELECTS) {
     const sel = q(k);
     if (![...sel.options].some((o) => o.value === String(s[k]))) sel.append(h('option', { value: String(s[k]), text: String(s[k]) }));
     if (sel !== active) sel.value = String(s[k]);
     sel.disabled = !host;
   }
-  q('chaos').checked = !!s.chaos;
   q('customOnly').checked = !!s.customOnly;
-  q('chaos').disabled = q('customOnly').disabled = !host;
+  q('customOnly').disabled = !host;
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;
   const ta = q('customWords');
   if (ta && ta !== active && Array.isArray(s.customWords)) ta.value = s.customWords.join(', ');
