@@ -176,7 +176,8 @@ test('malformed shapes are rejected and do not relay', async () => {
   a.send('chat', { text: 'after-bad-ellipse' });
   await b.wait((m) => m.t === 'chat' && m.text === 'after-bad-ellipse');
   expect(b.seen.filter((m) => m.t === 'stroke')).toEqual([]);
-  const rej = a.seen.find((m) => m.t === 'draw-reject');
-  expect(rej?.reason).toBe('pts');
+  // The rejection goes to A on its own socket; B seeing the chat says nothing about A's delivery.
+  const rej = await a.wait((m) => m.t === 'draw-reject');
+  expect(rej.reason).toBe('pts');
   a.close(); b.close();
 });
