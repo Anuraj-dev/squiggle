@@ -8,10 +8,10 @@ test('word bank is unique, sized, and drawable-only', () => {
   const all = allDefaultWords();
   const keys = all.map((w) => canonKey(w).replace(/ /g, ''));
   expect(new Set(keys).size).toBe(all.length);
-  expect(all.length).toBeGreaterThanOrEqual(600);
-  expect(WORDS.easy.length).toBeGreaterThan(250);
-  expect(WORDS.medium.length).toBeGreaterThan(200);
-  expect(WORDS.hard.length).toBeGreaterThan(120);
+  expect(all.length).toBeGreaterThanOrEqual(3000);
+  expect(WORDS.easy.length).toBeGreaterThanOrEqual(1000);
+  expect(WORDS.medium.length).toBeGreaterThanOrEqual(1000);
+  expect(WORDS.hard.length).toBeGreaterThanOrEqual(1000);
   for (const w of ABSTRACT) expect(keys).not.toContain(canonKey(w).replace(/ /g, ''));
   expect(all.some((w) => canonKey(w) === 'burger')).toBe(false);
   expect(all).toContain('hamburger');
