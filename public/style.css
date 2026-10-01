@@ -404,3 +404,17 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 @keyframes quake { 0%, 100% { transform: translate(0, 0); } 20% { transform: translate(-7px, 4px) rotate(-1deg); } 40% { transform: translate(6px, -5px); } 60% { transform: translate(-4px, -3px) rotate(1deg); } 80% { transform: translate(5px, 5px); } }
 @keyframes spin { from { transform: scale(0.78) rotate(0deg); } to { transform: scale(0.78) rotate(360deg); } }
 
+/* ---------- music player ---------- */
+.music { position: relative; }
+.music-panel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 240px; padding: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem;
+  background: var(--card); border: var(--line); border-radius: var(--r); box-shadow: var(--shadow);
+}
+.music-panel[hidden] { display: none; }
+.music-panel .now { font-weight: 800; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-panel .now small { display: block; font-weight: 600; color: var(--ink-2); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; }
+.music-panel .ctrls { display: flex; gap: 0.4rem; justify-content: center; }
+.music-panel .ctrls .icon-btn { width: 40px; height: 40px; }
+.music-panel label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; font-weight: 600; }
+.music-panel input[type=range] { flex: 1; accent-color: var(--grape); }
+#musicBtn.on { background: var(--sun); }

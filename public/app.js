@@ -1,6 +1,7 @@
 // Squiggle client: one module, no build step.
 import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
+import { createMusic } from './music.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 function h(tag, props = {}, ...kids) {
@@ -133,6 +134,30 @@ const play = (s) => SFX[s]?.();
 const setMuteIcon = () => { $('#muteBtn').textContent = muted ? '🔇' : '🔊'; };
 $('#muteBtn').onclick = () => { muted = !muted; store.set('sq-muted', muted); setMuteIcon(); };
 setMuteIcon();
+
+// Background music: on by default, starts with the first click (browsers
+// block audio before that). Preferences persist per browser.
+const musicPrefs = { on: true, volume: 0.5, track: 0, ...store.get('sq-music', {}) };
+const music = createMusic(() => { unlockAudio(); return ac; });
+music.setVolume(musicPrefs.volume);
+music.setTrack(musicPrefs.track);
+music.subscribe((m) => {
+  $('#trackName').textContent = m.name;
+  $('#musicPlay').textContent = m.playing ? '⏸' : '▶';
+  $('#musicPlay').setAttribute('aria-label', m.playing ? 'Pause music' : 'Play music');
+  $('#musicBtn').classList.toggle('on', m.playing);
+  $('#musicVol').value = String(Math.round(m.volume * 100));
+  store.set('sq-music', { on: musicPrefs.on, volume: m.volume, track: m.index });
+});
+addEventListener('pointerdown', () => { if (musicPrefs.on) music.play(); }, { once: true });
+const setPanel = (open) => { $('#musicPanel').hidden = !open; $('#musicBtn').setAttribute('aria-expanded', String(open)); };
+$('#musicBtn').onclick = () => setPanel($('#musicPanel').hidden);
+addEventListener('pointerdown', (e) => { if (!e.target.closest('.music')) setPanel(false); });
+addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
+$('#musicPlay').onclick = () => { music.toggle(); musicPrefs.on = music.state().playing; store.set('sq-music', { ...musicPrefs, volume: music.state().volume, track: music.state().index }); };
+$('#trackPrev').onclick = () => music.skip(-1);
+$('#trackNext').onclick = () => music.skip(1);
+$('#musicVol').oninput = (e) => music.setVolume(+e.target.value / 100);
 
 let toastT;
 function toast(text) {

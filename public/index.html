@@ -64,7 +64,19 @@
           <svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="19"/><circle class="prog" cx="22" cy="22" r="19"/></svg>
           <span id="timerTxt"></span>
         </div>
-        <button id="muteBtn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+        <div class="music">
+          <button id="musicBtn" class="icon-btn" aria-label="Music" aria-haspopup="true" aria-expanded="false" title="Music">🎵</button>
+          <div id="musicPanel" class="music-panel" hidden>
+            <div class="now"><small>Now playing</small><span id="trackName"></span></div>
+            <div class="ctrls">
+              <button id="trackPrev" class="icon-btn" aria-label="Previous track">⏮</button>
+              <button id="musicPlay" class="icon-btn" aria-label="Play music">▶</button>
+              <button id="trackNext" class="icon-btn" aria-label="Next track">⏭</button>
+            </div>
+            <label>🔈<input id="musicVol" type="range" min="0" max="100" aria-label="Music volume">🔊</label>
+          </div>
+        </div>
+        <button id="muteBtn" class="icon-btn" aria-label="Toggle sound effects" title="Sound effects">🔊</button>
         <button id="leaveBtn" class="icon-btn" aria-label="Leave room" title="Leave room">🚪</button>
       </div>
     </header>
