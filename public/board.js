@@ -76,6 +76,17 @@ function fillAt(c, x, y, hex) {
   c.drawImage(sc, 0, 0);
 }
 
+// Affine copies a stroke is painted under, as [sx, sy, tx, ty, alpha]:
+// x' = sx·x + tx, y' = sy·y + ty. Built from the stroke's chaos flags.
+export function views(s) {
+  let v = [[1, s.squish ? 0.5 : 1, 0, s.squish ? H / 4 : 0, 1]];
+  if (s.flipY) v = v.map(([sx, sy, tx, ty, a]) => [sx, -sy, tx, H - ty, a]);
+  if (s.mirror || s.kaleido) v = v.flatMap((x) => [x, [-x[0], x[1], W - x[2], x[3], x[4]]]);
+  if (s.kaleido) v = v.flatMap((x) => [x, [x[0], -x[1], x[2], H - x[3], x[4]]]);
+  if (s.double) v = v.flatMap((x) => [x, [x[0], x[1], x[2] + 16, x[3] + 12, 0.35]]);
+  return v;
+}
+
 // opts.fade: apply ghost-ink alpha using opts.gameMs and opts.chaos.
 export function drawStroke(c, s, from = 0, opts = {}) {
   let alpha = 1;
@@ -83,24 +94,24 @@ export function drawStroke(c, s, from = 0, opts = {}) {
     alpha = fadeAlpha((opts.gameMs || 0) - (s.t || 0), fadeMs(opts.chaos?.seed || 1));
     if (alpha <= 0) return;
   }
-  c.save();
-  c.globalAlpha = alpha;
-  if (s.tool === 'fill') {
-    const color = s.rainbow ? RAINBOW_FILLS[hashId(s.id) % RAINBOW_FILLS.length] : s.color;
-    fillAt(c, s.pts[0], s.pts[1], color);
-    if (s.mirror) fillAt(c, W - 1 - s.pts[0], s.pts[1], color);
-  } else {
-    paint(c, s, from);
-    if (s.mirror) {
+  const color = s.tool === 'fill' && s.rainbow ? RAINBOW_FILLS[hashId(s.id) % RAINBOW_FILLS.length] : s.color;
+  for (const [sx, sy, tx, ty, a] of views(s)) {
+    c.save();
+    c.globalAlpha = alpha * a;
+    if (s.tool === 'fill') {
+      const px = (v, max) => Math.min(max - 1, Math.max(0, Math.round(v)));
+      fillAt(c, px(sx * s.pts[0] + tx, W), px(sy * s.pts[1] + ty, H), color);
+    } else {
       // Compose onto the current transform rather than replacing it.
-      c.translate(W, 0);
-      c.scale(-1, 1);
+      c.transform(sx, 0, 0, sy, tx, ty);
       paint(c, s, from);
     }
+    c.restore();
   }
-  c.restore();
 }
 
+// opts.memory keeps only the newest strokes; opts.lagMs hides strokes younger
+// than that (by game time).
 export function paintPaper(c, strokes, opts = {}) {
   c.save();
   c.setTransform(1, 0, 0, 1, 0, 0);
@@ -108,7 +119,9 @@ export function paintPaper(c, strokes, opts = {}) {
   c.fillStyle = '#fff';
   c.fillRect(0, 0, W, H);
   c.restore();
-  for (const s of strokes) drawStroke(c, s, 0, opts);
+  let list = opts.memory ? strokes.slice(-opts.memory) : strokes;
+  if (opts.lagMs) list = list.filter((s) => (opts.gameMs || 0) - (s.t || 0) >= opts.lagMs);
+  for (const s of list) drawStroke(c, s, 0, opts);
 }
 
 let thumbPaper = null;
@@ -122,6 +135,7 @@ export function paintThumb(tctx, w, h, strokes) {
 function paint(c, s, from) {
   const p = s.pts;
   c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = s.size;
+  if (s.dotted) c.setLineDash?.([0.1, s.size * 2]);
   const erasing = s.tool === 'eraser';
   const base = erasing ? '#ffffff' : s.color;
   const rainbow = !!(s.rainbow && !erasing);

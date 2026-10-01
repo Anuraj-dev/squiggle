@@ -2,7 +2,7 @@
 // small recording 2D context (tracks the transform and a pixel buffer).
 import { expect, test } from 'bun:test';
 import { W, H } from './public/shared.js';
-import { applyStroke, drawStroke, floodRegion, paintThumb, setCanvasFactory } from './public/board.js';
+import { applyStroke, drawStroke, floodRegion, paintThumb, setCanvasFactory, views } from './public/board.js';
 
 class FakeCtx {
   constructor(w, h) {
@@ -118,4 +118,14 @@ test('server acks reconcile into the live stroke object and keep newer local poi
   const other = { id: 'them:1', tool: 'pen', pts: [9, 9] };
   applyStroke(strokes, other);
   expect(strokes[1]).toBe(other);
+});
+
+test('chaos stroke flags map to painted copies', () => {
+  expect(views({})).toEqual([[1, 1, 0, 0, 1]]);
+  expect(views({ kaleido: true })).toHaveLength(4);
+  expect(views({ flipY: true })).toEqual([[1, -1, 0, H, 1]]);
+  expect(views({ mirror: true, double: true }).map((v) => v[4])).toEqual([1, 0.35, 1, 0.35]);
+  // Pancake squashes y into the middle half of the page.
+  const [[, sy, , ty]] = views({ squish: true });
+  expect([sy * 0 + ty, sy * H + ty]).toEqual([H / 4, (3 * H) / 4]);
 });
