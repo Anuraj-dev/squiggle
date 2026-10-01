@@ -213,7 +213,18 @@ async function copyInvite() {
 }
 $('#codeChip').onclick = copyInvite;
 
-const sameTurn = (m) => m.seq == null || !S || m.seq === S.seq;
+// The board follows its own phase token. The server sends a turn's `clear`
+// before the matching `state`, so a newer board reset must be taken even when
+// the state snapshot still carries the previous seq.
+let boardSeq = -1;
+const sameTurn = (m) => m.seq == null || m.seq === boardSeq;
+function resetBoard(m) {
+  if (m.seq != null && m.seq < boardSeq) return;
+  if (m.seq != null) boardSeq = m.seq;
+  cancelLocal();
+  strokes = m.strokes || [];
+  markDirty();
+}
 
 function onMsg(m) {
   switch (m.t) {
@@ -221,7 +232,7 @@ function onMsg(m) {
       roomCode = m.code; myId = m.id;
       tokens[m.code] = m.token; store.set('sq-tokens', tokens);
       history.replaceState(null, '', `?r=${m.code}`);
-      overlayKey = ''; toolbarKey = ''; lobbyMinimized = false; gallery = [];
+      overlayKey = ''; toolbarKey = ''; lobbyMinimized = false; gallery = []; boardSeq = -1;
       $('#home').hidden = true; $('#game').hidden = false;
       $('#codeLbl').textContent = m.code;
       document.title = `Squiggle · ${m.code}`;
@@ -236,10 +247,8 @@ function onMsg(m) {
       break;
     }
     case 'canvas':
-      if (!sameTurn(m)) break;
-      strokes = m.strokes || [];
-      cancelLocal();
-      markDirty();
+    case 'clear':
+      resetBoard(m);
       break;
     case 'stroke': {
       if (!sameTurn(m)) break;
@@ -261,12 +270,6 @@ function onMsg(m) {
       if (!sameTurn(m)) break;
       if (cur?.id === m.id) cancelLocal();
       strokes = strokes.filter((x) => x.id !== m.id);
-      markDirty();
-      break;
-    case 'clear':
-      if (!sameTurn(m)) break;
-      cancelLocal();
-      strokes = m.strokes || [];
       markDirty();
       break;
     case 'draw-reject':
