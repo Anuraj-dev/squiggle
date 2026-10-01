@@ -1,0 +1,114 @@
+import { expect, test } from 'bun:test';
+import {
+  W, H, GALLERY_COORDS, CHAOS_MODES,
+  validateStroke, strokeId, applyChaos, pickChaos,
+  guesserPts, drawerPts, timeFrac, tiedRanking, podiumGroups,
+  allowedTool, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
+} from './public/shared.js';
+
+test('ellipse and fill coordinate contracts', () => {
+  expect(validateStroke({ id: 'a', tool: 'ellipse', pts: [100, 100] }).ok).toBe(false);
+  expect(validateStroke({ id: 'a', tool: 'ellipse', pts: [100, 100, 200, 180] }).ok).toBe(true);
+  expect(validateStroke({ id: 'a', tool: 'fill', pts: [10, 10] }).ok).toBe(true);
+  expect(validateStroke({ id: 'a', tool: 'fill', pts: [10, 10, 20, 20] }).ok).toBe(false);
+  expect(validateStroke({ id: 'a', tool: 'pen', pts: [1] }).ok).toBe(false);
+  expect(validateStroke({ id: 'a', tool: 'pen', pts: [1, 'x'] }).ok).toBe(false);
+  expect(validateStroke({ id: 'a', tool: 'pen', pts: [1, NaN] }).ok).toBe(false);
+  expect(validateStroke({ tool: 'pen', pts: [1, 2] }).ok).toBe(false);
+  expect(validateStroke({ id: 'a', tool: 'pen', pts: [1e9, -1e9] }).pts).toEqual([W - 1, 0]);
+  expect(validateStroke({ id: 'a', tool: 'fill', pts: [-3, H + 9] }).pts).toEqual([0, H - 1]);
+});
+
+test('stroke ids are owner-prefixed and stable', () => {
+  expect(strokeId('abc', 'x1')).toBe('abc:x1');
+  expect(strokeId('abc', 'abc:x1')).toBe('abc:x1');
+  expect(strokeId('abc', '')).toBe('');
+  expect(strokeId('abc', 'x y<>')).toBe('abc:xy');
+});
+
+test('rainbow ink does not mark erasers', () => {
+  const tw = { id: 'rainbow' };
+  const pen = applyChaos({ tool: 'pen', color: '#ff0000', size: 8 }, tw);
+  const eraser = applyChaos({ tool: 'eraser', color: '#ff0000', size: 8 }, tw);
+  expect(pen.rainbow).toBe(true);
+  expect(eraser.rainbow).toBeUndefined();
+  expect(eraser.color).toBe('#ff0000');
+});
+
+test('chaos pay a bonus; speedrun pays most; no chaos pays base', () => {
+  const at = (chaos) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos, first: false, streak: 1 });
+  expect(at(null)).toBe(300);
+  expect(at({ id: 'mirror' })).toBe(360);
+  expect(at({ id: 'speed' })).toBe(450);
+  expect(timeFrac(45000, 80000)).toBeCloseTo(0.4375);
+  expect(guesserPts({ elapsed: 20000, scoreLen: 80000, diff: 'easy', chaos: null, first: true, streak: 3 })).toBe(60 + 180 + 50 + 30);
+});
+
+test('pickChaos never repeats the previous chaos', () => {
+  for (let seed = 1; seed < 200; seed++) {
+    for (const prev of CHAOS_MODES.map((t) => t.id)) expect(pickChaos(seed, prev).id).not.toBe(prev);
+  }
+});
+
+test('drawer score is a fraction of eligible guessers', () => {
+  expect(drawerPts({ solved: 1, eligible: 1, diff: 'easy', chaos: null })).toBe(180);
+  expect(drawerPts({ solved: 1, eligible: 8, diff: 'easy', chaos: null })).toBe(23);
+  expect(drawerPts({ solved: 0, eligible: 3, diff: 'easy', chaos: null })).toBe(0);
+  expect(drawerPts({ solved: 0, eligible: 0, diff: 'easy', chaos: null })).toBe(0);
+});
+
+test('tied ranking: shared places, everyone on the results exactly once', () => {
+  const mk = (id, score) => ({ id, name: id, avatar: '🦊', color: '#000', score });
+  const r = tiedRanking([mk('a', 300), mk('b', 200), mk('c', 200), mk('d', 100)]);
+  expect(r.map((p) => p.rank)).toEqual([1, 2, 2, 4]);
+  const { podium, rest } = podiumGroups(r);
+  expect(podium.map((g) => [g.rank, g.players.map((p) => p.id)])).toEqual([[1, ['a']], [2, ['b', 'c']]]);
+  expect(rest.map((p) => p.id)).toEqual(['d']);
+  const shown = [...podium.flatMap((g) => g.players), ...rest].map((p) => p.id).sort();
+  expect(shown).toEqual(['a', 'b', 'c', 'd']);
+  const zero = podiumGroups(tiedRanking([mk('a', 0), mk('b', 0), mk('c', 0), mk('d', 0)]));
+  expect(zero.podium).toHaveLength(1);
+  expect(zero.podium[0].players).toHaveLength(4);
+  expect(zero.rest).toEqual([]);
+});
+
+test('tool rules: one line is pen only, ghost ink has no fill', () => {
+  expect(['pen', 'eraser', 'fill', 'line'].filter((t) => allowedTool({ id: 'onestroke' }, t))).toEqual(['pen']);
+  expect(allowedTool({ id: 'fade' }, 'fill')).toBe(false);
+  expect(allowedTool({ id: 'fade' }, 'eraser')).toBe(true);
+  expect(allowedTool(null, 'fill')).toBe(true);
+  expect(allowedTool(null, 'stamp')).toBe(false);
+});
+
+test('client clock freezes while paused', () => {
+  const S = { timeLeft: 30000, gameMs: 5000, paused: null };
+  expect(clientClock(S, 1000, 3000)).toEqual({ left: 28000, gameMs: 7000 });
+  expect(clientClock({ ...S, paused: { reason: 'x' } }, 1000, 60000)).toEqual({ left: 30000, gameMs: 5000 });
+  expect(clientClock(S, 1000, 99999).left).toBe(0);
+});
+
+test('shaky jitter is deterministic, bounded, and index-addressed', () => {
+  expect(jitter('p:1', 3)).toEqual(jitter('p:1', 3));
+  const all = jitterPts('p:1', [0, 0, 10, 10, 20, 20]);
+  expect(jitterPts('p:1', [10, 10, 20, 20], 1)).toEqual(all.slice(2));
+  for (const v of all.map((n, i) => n - [0, 0, 10, 10, 20, 20][i])) expect(Math.abs(v)).toBeLessThanOrEqual(7);
+});
+
+test('ghost ink stays, then fades out', () => {
+  expect(fadeAlpha(8000, 8000)).toBe(1);
+  expect(fadeAlpha(9000, 8000)).toBeLessThan(1);
+  expect(fadeAlpha(20000, 8000)).toBe(0);
+});
+
+test('gallery keeps every stroke and its true endpoint within a bounded budget', () => {
+  const zig = (n, y0) => Array.from({ length: n }, (_, i) => (i % 2 ? y0 + (i % 7) : i % 991));
+  const strokes = Array.from({ length: 2500 }, (_, k) => ({ id: `s${k}`, tool: 'pen', pts: zig(k < 10 ? 8000 : 20, k) }));
+  strokes.push({ id: 'last', tool: 'pen', pts: [5, 5, 6, 6, 7, 400] });
+  const kept = galleryStrokes(strokes);
+  expect(kept).toHaveLength(strokes.length);
+  expect(kept.at(-1).pts.slice(-2)).toEqual([7, 400]);
+  for (let k = 0; k < 10; k++) expect(kept[k].pts.slice(-2)).toEqual(strokes[k].pts.slice(-2));
+  expect(kept.reduce((n, s) => n + s.pts.length, 0)).toBeLessThan(GALLERY_COORDS * 2.5);
+  const small = [{ id: 'a', tool: 'pen', pts: [1, 2, 3, 4] }];
+  expect(galleryStrokes(small)).toBe(small);
+});
