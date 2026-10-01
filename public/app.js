@@ -131,9 +131,8 @@ const SFX = {
   pop: () => tone(700, 0, 0.06, 'sine', 0.05, 1200),
 };
 const play = (s) => SFX[s]?.();
-const setMuteIcon = () => { $('#muteBtn').textContent = muted ? '🔇' : '🔊'; };
-$('#muteBtn').onclick = () => { muted = !muted; store.set('sq-muted', muted); setMuteIcon(); };
-setMuteIcon();
+$('#sfxIn').checked = !muted;
+$('#sfxIn').onchange = (e) => { muted = !e.target.checked; store.set('sq-muted', muted); };
 
 // Background music: on by default, starts with the first click (browsers
 // block audio before that). Preferences persist per browser.
