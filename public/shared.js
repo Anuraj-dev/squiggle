@@ -60,21 +60,27 @@ export function shuffleIn(a, rnd) {
 
 // --- scoring ---------------------------------------------------------------
 
-// A chaos makes drawing harder, so it pays a little more; Speedrun pays most.
+// A chaos mode makes drawing harder, so it pays a little more; Speedrun pays most.
 export function scoreMult(diff, chaos) {
   return (DIFF_MULT[diff] || 1) * (!chaos ? 1 : is(chaos, 'speed') ? 1.5 : 1.2);
 }
 
+// Share of the speed bonus still on offer. Time counts in whole seconds and
+// the first 15% of the turn is a free grace window, so network jitter or a
+// near-tie between guessers never changes the score.
 export function timeFrac(elapsed, scoreLen) {
   if (!scoreLen) return 0;
-  return Math.max(0, Math.min(1, 1 - elapsed / scoreLen));
+  const grace = scoreLen * 0.15;
+  const t = Math.floor(Math.max(0, elapsed) / 1000) * 1000;
+  return Math.max(0, Math.min(1, 1 - (t - grace) / (scoreLen - grace)));
 }
 
 // elapsed is unpaused turn time; scoreLen is the turn length at the start of
 // the turn, so a speedup that shortens the deadline never changes the curve.
-export function guesserPts({ elapsed, scoreLen, diff, chaos, first, streak }) {
+// No first-guesser bonus: a 1 ms tie must not be worth points.
+export function guesserPts({ elapsed, scoreLen, diff, chaos, streak }) {
   const streakN = Math.min(5, Math.max(0, (streak || 1) - 1));
-  return Math.round((60 + 240 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + (first ? 50 : 0) + streakN * 15;
+  return Math.round((120 + 180 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 15;
 }
 
 // eligible is the number of guessers present when drawing started; it does

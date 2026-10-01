@@ -415,7 +415,7 @@ export class Room {
     const first = this.guessed.size === 0;
     p.streak++;
     p.bestStreak = Math.max(p.bestStreak, p.streak);
-    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: this.chaos, first, streak: p.streak });
+    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: this.chaos, streak: p.streak });
     this.guessed.set(p.id, { pts, ms: elapsed, name: p.name });
     p.score += pts;
     if (p.fastest == null || elapsed < p.fastest) p.fastest = elapsed;

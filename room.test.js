@@ -185,9 +185,9 @@ test('speedup keeps the original score curve and reschedules hints', () => {
   advance(5000);
   c.act('chat', { text: word });
   const pts = ctx.room.guessed.get(c.id).pts;
-  expect(pts).toBe(guesserPts({ elapsed: 25000, scoreLen: 80000, diff: ctx.room.diff, chaos: ctx.room.chaos, first: false, streak: 1 }));
+  expect(pts).toBe(guesserPts({ elapsed: 25000, scoreLen: 80000, diff: ctx.room.diff, chaos: ctx.room.chaos, streak: 1 }));
   // Scoring against the shortened 45s turn would have paid less.
-  expect(pts).toBeGreaterThan(guesserPts({ elapsed: 25000, scoreLen: 45000, diff: ctx.room.diff, chaos: ctx.room.chaos, first: false, streak: 1 }));
+  expect(pts).toBeGreaterThan(guesserPts({ elapsed: 25000, scoreLen: 45000, diff: ctx.room.diff, chaos: ctx.room.chaos, streak: 1 }));
 });
 
 test('hints still arrive after a speedup shortens the turn', () => {

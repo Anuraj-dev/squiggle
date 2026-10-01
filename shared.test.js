@@ -35,13 +35,24 @@ test('rainbow ink does not mark erasers', () => {
   expect(eraser.color).toBe('#ff0000');
 });
 
-test('chaos pay a bonus; speedrun pays most; no chaos pays base', () => {
-  const at = (chaos) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos, first: false, streak: 1 });
+test('chaos pays a bonus; speedrun pays most; no chaos pays base', () => {
+  const at = (chaos) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos, streak: 1 });
   expect(at(null)).toBe(300);
   expect(at({ id: 'mirror' })).toBe(360);
   expect(at({ id: 'speed' })).toBe(450);
-  expect(timeFrac(45000, 80000)).toBeCloseTo(0.4375);
-  expect(guesserPts({ elapsed: 20000, scoreLen: 80000, diff: 'easy', chaos: null, first: true, streak: 3 })).toBe(60 + 180 + 50 + 30);
+  expect(guesserPts({ elapsed: 80000, scoreLen: 80000, diff: 'easy', chaos: null, streak: 3 })).toBe(120 + 30);
+});
+
+test('scoring is forgiving: grace window, whole seconds, no first-guess cliff', () => {
+  const pts = (elapsed) => guesserPts({ elapsed, scoreLen: 80000, diff: 'medium', chaos: null, streak: 1 });
+  // Anything in the first 15% of the turn scores the maximum.
+  expect(pts(0)).toBe(pts(11999));
+  // A millisecond apart never changes points.
+  for (const t of [12500, 30001, 47500, 79000]) expect(pts(t + 1)).toBe(pts(t));
+  // Each later second costs only a few points, and the floor stays high.
+  expect(pts(30000) - pts(31000)).toBeLessThanOrEqual(4);
+  expect(pts(80000)).toBe(Math.round(120 * 1.3));
+  expect(timeFrac(46000, 80000)).toBeCloseTo(1 - 34000 / 68000);
 });
 
 test('pickChaos never repeats the previous chaos', () => {
