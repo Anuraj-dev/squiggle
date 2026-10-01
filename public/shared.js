@@ -14,17 +14,40 @@ export const SPEEDUP_LEFT = 25000;
 export const TOOLS = new Set(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse']);
 export const JITTER = 7;
 
-// With chaos on, every turn gets exactly one.
+// Chaos modes: one silly rule per turn. `view` modes only change what the
+// guessers see; everything else is enforced on the strokes themselves.
 export const CHAOS_MODES = [
   { id: 'mirror', icon: '🪞', name: 'Mirror Mirror', desc: 'Everything you draw is mirrored' },
   { id: 'onestroke', icon: '➰', name: 'One Line', desc: 'One pen stroke — don’t lift!' },
   { id: 'blind', icon: '🙈', name: 'Blindfold', desc: 'You can’t see your drawing. They can.' },
   { id: 'tiny', icon: '🤏', name: 'Tiny Pen', desc: 'Smallest brush only' },
+  { id: 'giant', icon: '🖍️', name: 'Fat Marker', desc: 'Biggest brush only' },
   { id: 'shaky', icon: '☕', name: 'Too Much Coffee', desc: 'Your hand won’t stop shaking' },
   { id: 'rainbow', icon: '🌈', name: 'Rainbow Ink', desc: 'Every line is a rainbow' },
   { id: 'fade', icon: '👻', name: 'Ghost Ink', desc: 'Lines vanish after a few seconds' },
   { id: 'speed', icon: '⚡', name: 'Speedrun', desc: 'Half the time, 1.5× points' },
+  { id: 'onecolor', icon: '🎨', name: 'One Color', desc: 'Stuck with one random color' },
+  { id: 'randomink', icon: '🎲', name: 'Mystery Ink', desc: 'Every stroke picks its own color' },
+  { id: 'upside', icon: '🙃', name: 'Upside Down', desc: 'Everything lands upside down' },
+  { id: 'kaleido', icon: '❄️', name: 'Kaleidoscope', desc: 'Four-way mirror on everything' },
+  { id: 'squish', icon: '🥞', name: 'Pancake', desc: 'Everything gets squashed flat' },
+  { id: 'shapes', icon: '🔷', name: 'Shapes Only', desc: 'Lines, boxes, circles and fill — no pen' },
+  { id: 'permanent', icon: '🖊️', name: 'Permanent Marker', desc: 'No eraser, no undo, no clear' },
+  { id: 'dotted', icon: '🫧', name: 'Morse Code', desc: 'Every line comes out dotted' },
+  { id: 'double', icon: '😵‍💫', name: 'Double Vision', desc: 'Everything has a ghostly twin' },
+  { id: 'memory', icon: '🐠', name: 'Goldfish Memory', desc: 'Only the last 4 strokes stay visible' },
+  { id: 'nohints', icon: '🤐', name: 'No Hints', desc: 'No letters get revealed this turn' },
+  { id: 'fog', icon: '🌫️', name: 'Foggy Glasses', desc: 'Guessers see a blur that slowly clears', view: true },
+  { id: 'quake', icon: '🌋', name: 'Earthquake', desc: 'The guessers’ screen won’t stop shaking', view: true },
+  { id: 'spin', icon: '🎠', name: 'Merry-Go-Round', desc: 'The canvas slowly spins for guessers', view: true },
+  { id: 'negative', icon: '🌚', name: 'Negative', desc: 'Guessers see inverted colors', view: true },
+  { id: 'pixel', icon: '👾', name: '8-Bit', desc: 'Guessers see chunky pixels', view: true },
+  { id: 'laggy', icon: '🐌', name: 'Laggy Stream', desc: 'Guessers see your drawing 4 seconds late', view: true },
 ];
+export const CHAOS_LEVELS = ['off', 'some', 'always'];
+export const LAG_MS = 4000, MEMORY_STROKES = 4;
+// Saturated inks for One Color / Mystery Ink.
+export const INKS = ['#e8322a', '#ff7a2f', '#1f9d55', '#2ec4d6', '#3d7bff', '#9b6bff', '#ff4fa3', '#8a4b2a'];
 
 export function pickChaos(seed, prevId) {
   const pool = CHAOS_MODES.filter((t) => t.id !== prevId);
@@ -163,18 +186,30 @@ export function validateStroke(s) {
   return { ok: true, tool, pts, color, size };
 }
 
-// Which drawing tools the artist may use under a chaos.
+// Which drawing tools the artist may use under a chaos mode.
 export function allowedTool(chaos, tool) {
   if (!TOOLS.has(tool)) return false;
   if (is(chaos, 'onestroke')) return tool === 'pen';
   if (is(chaos, 'fade')) return tool !== 'fill';
+  if (is(chaos, 'shapes')) return tool !== 'pen' && tool !== 'eraser';
+  if (is(chaos, 'permanent')) return tool !== 'eraser';
   return true;
 }
 
+export const canUndo = (chaos) => !is(chaos, 'onestroke') && !is(chaos, 'permanent');
+
+// Stroke-level effects; render flags are read by board.js.
 export function applyChaos(out, chaos) {
+  const ink = out.tool !== 'eraser';
   if (is(chaos, 'tiny')) out.size = 3;
-  if (is(chaos, 'rainbow') && out.tool !== 'eraser') out.rainbow = true;
-  if (is(chaos, 'mirror')) out.mirror = true;
+  if (is(chaos, 'giant')) out.size = 44;
+  if (is(chaos, 'onecolor') && ink) out.color = INKS[(chaos.seed >>> 3) % INKS.length];
+  if (is(chaos, 'randomink') && ink) out.color = INKS[hashStr(String(out.id)) % INKS.length];
+  if (is(chaos, 'rainbow') && ink) out.rainbow = true;
+  for (const [id, flag] of [['mirror', 'mirror'], ['kaleido', 'kaleido'], ['upside', 'flipY'], ['squish', 'squish'], ['double', 'double']]) {
+    if (is(chaos, id)) out[flag] = true;
+  }
+  if (is(chaos, 'dotted') && out.tool !== 'fill') out.dotted = true;
   return out;
 }
 

@@ -3,7 +3,7 @@ import {
   W, H, GALLERY_COORDS, CHAOS_MODES,
   validateStroke, strokeId, applyChaos, pickChaos,
   guesserPts, drawerPts, timeFrac, tiedRanking, podiumGroups,
-  allowedTool, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
+  allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
 } from './public/shared.js';
 
 test('ellipse and fill coordinate contracts', () => {
@@ -53,6 +53,22 @@ test('scoring is forgiving: grace window, whole seconds, no first-guess cliff', 
   expect(pts(30000) - pts(31000)).toBeLessThanOrEqual(4);
   expect(pts(80000)).toBe(Math.round(120 * 1.3));
   expect(timeFrac(46000, 80000)).toBeCloseTo(1 - 34000 / 68000);
+});
+
+test('chaos tool rules and stroke effects', () => {
+  expect(allowedTool({ id: 'shapes' }, 'pen')).toBe(false);
+  expect(allowedTool({ id: 'shapes' }, 'rect')).toBe(true);
+  expect(allowedTool({ id: 'permanent' }, 'eraser')).toBe(false);
+  expect(canUndo({ id: 'permanent' })).toBe(false);
+  expect(canUndo({ id: 'mirror' })).toBe(true);
+  expect(applyChaos({ tool: 'pen', size: 8 }, { id: 'giant' }).size).toBe(44);
+  const one = { id: 'onecolor', seed: 77 };
+  expect(applyChaos({ id: 'a', tool: 'pen', color: '#000000' }, one).color)
+    .toBe(applyChaos({ id: 'b', tool: 'line', color: '#ffffff' }, one).color);
+  expect(applyChaos({ tool: 'pen' }, { id: 'upside' }).flipY).toBe(true);
+  expect(applyChaos({ tool: 'fill' }, { id: 'dotted' }).dotted).toBeUndefined();
+  expect(CHAOS_MODES.length).toBeGreaterThanOrEqual(20);
+  expect(new Set(CHAOS_MODES.map((c) => c.id)).size).toBe(CHAOS_MODES.length);
 });
 
 test('pickChaos never repeats the previous chaos', () => {

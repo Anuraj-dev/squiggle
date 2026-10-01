@@ -5,7 +5,7 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  clamp, clean, norm, lev, shuffleIn, pickChaos, is,
+  clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
 } from './public/shared.js';
@@ -363,7 +363,8 @@ export class Room {
     this.scoreLen = ms;
     this.phase(ms, () => this.endTurn('time'));
     const letters = [...c.word].map((ch, idx) => (/[a-z0-9]/i.test(ch) ? idx : -1)).filter((idx) => idx >= 0);
-    this.hintPlan = shuffle(letters).slice(0, Math.min(HINTS, Math.floor(letters.length / 2)));
+    const hints = is(this.chaos, 'nohints') ? 0 : HINTS;
+    this.hintPlan = shuffle(letters).slice(0, Math.min(hints, Math.floor(letters.length / 2)));
     this.scheduleHints();
     this.system(`✏️ ${this.players.get(this.drawerId).name} is drawing`, 'turn');
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
@@ -642,7 +643,7 @@ const handlers = {
   },
   undo(room, p, m) {
     if (!room.drawGate(p, m)) return;
-    if (room.state === 'drawing' && is(room.chaos, 'onestroke')) return room.rejectDraw(p, 'onestroke');
+    if (room.state === 'drawing' && !canUndo(room.chaos)) return room.rejectDraw(p, 'locked');
     const idx = room.strokes.findLastIndex((x) => x.by === p.id);
     if (idx < 0) return;
     const [s] = room.strokes.splice(idx, 1);
@@ -651,7 +652,7 @@ const handlers = {
   },
   clear(room, p, m) {
     const lobby = room.state === 'lobby';
-    if (lobby ? p.id !== room.hostId : is(room.chaos, 'onestroke')) return;
+    if (lobby ? p.id !== room.hostId : !canUndo(room.chaos)) return;
     if (!room.drawGate(p, m)) return;
     room.resetCanvas();
     room.broadcast('clear', { seq: room.turnSeq, strokes: [] });
