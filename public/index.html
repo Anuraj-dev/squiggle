@@ -42,10 +42,9 @@
         <p id="homeErr" class="err" role="alert"></p>
       </div>
       <ul class="perks">
-        <li><b>🌀 Chaos mode</b> mirror, rainbow, blindfold & more twists</li>
-        <li><b>🔥 Streaks</b> and near-miss “so close!” hints</li>
-        <li><b>🖼️ Gallery</b> of every masterpiece at the end</li>
-        <li><b>🎨 Doodle wall</b> in the lobby while you wait</li>
+        <li>🌀 Silly chaos</li>
+        <li>🔥 Streaks</li>
+        <li>🖼️ Gallery at the end</li>
       </ul>
     </div>
   </section>
@@ -70,14 +69,17 @@
       </div>
     </header>
     <main class="layout">
-      <aside class="players card" aria-label="Players"><ol id="playerList"></ol></aside>
+      <aside class="players card" aria-label="Players">
+        <ol id="playerList"></ol>
+      </aside>
       <section class="stage">
         <div class="board-wrap" id="boardWrap">
           <canvas id="board" width="1000" height="750" aria-label="Drawing canvas"></canvas>
-          <div id="blind" class="blind" hidden><div>🙈<b>Blindfolded!</b><span>Draw from memory — everyone else can see it.</span></div></div>
           <canvas id="fx" width="1000" height="750" aria-hidden="true"></canvas>
+          <div id="blind" class="blind" hidden><div>🙈<b>Blindfolded!</b><span>Everyone else can see it.</span></div></div>
+          <div id="pauseBanner" class="pause-banner" role="status" hidden></div>
           <div id="modChip" class="mod-chip" hidden></div>
-          <button id="settingsPill" class="settings-pill" hidden>⚙️ Settings & start</button>
+          <button id="settingsPill" class="settings-pill" hidden>⚙️ Back to settings</button>
           <div id="reactLayer" class="react-layer" aria-hidden="true"></div>
           <div id="overlay" class="overlay" hidden></div>
         </div>
@@ -87,6 +89,7 @@
       <aside class="chat card" aria-label="Chat and guesses">
         <div id="msgs" class="msgs" aria-live="polite"></div>
         <form id="chatForm" class="chat-form">
+          <label class="sr-only" for="chatIn">Guess or chat</label>
           <input id="chatIn" autocomplete="off" maxlength="120" placeholder="Type your guess…" enterkeyhint="send">
           <button class="btn primary" aria-label="Send">↵</button>
         </form>
@@ -94,7 +97,7 @@
     </main>
   </section>
 
-  <div id="endModal" class="end-modal" hidden></div>
+  <dialog id="endModal" class="end-modal" aria-labelledby="endTitle"></dialog>
   <div id="toast" class="toast" role="status"></div>
   <div id="confetti" class="confetti" aria-hidden="true"></div>
   <script src="app.js" type="module"></script>
