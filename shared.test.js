@@ -4,6 +4,7 @@ import {
   validateStroke, strokeId, applyChaos, pickChaos,
   guesserPts, drawerPts, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
+  inkCost, trimInk, turnProgress, viewStrength,
 } from './public/shared.js';
 
 test('ellipse and fill coordinate contracts', () => {
@@ -17,6 +18,30 @@ test('ellipse and fill coordinate contracts', () => {
   expect(validateStroke({ tool: 'pen', pts: [1, 2] }).ok).toBe(false);
   expect(validateStroke({ id: 'a', tool: 'pen', pts: [1e9, -1e9] }).pts).toEqual([W - 1, 0]);
   expect(validateStroke({ id: 'a', tool: 'fill', pts: [-3, H + 9] }).pts).toEqual([0, H - 1]);
+});
+
+test('ink measures geometry and clips a freehand segment at the remaining distance', () => {
+  expect(inkCost({ tool: 'pen', size: 6, pts: [0, 0, 3, 4] })).toBe(11);
+  expect(inkCost({ tool: 'pen', size: 6, pts: [3, 4] }, [0, 0])).toBe(5);
+  expect(inkCost({ tool: 'rect', size: 6, pts: [10, 10, 110, 60] })).toBe(300);
+  expect(inkCost({ tool: 'ellipse', size: 6, pts: [0, 0, 100, 100] })).toBeCloseTo(Math.PI * 100);
+  expect(trimInk([3, 4, 6, 8], 7, [0, 0])).toEqual({ pts: [3, 4, 4.2, 5.6], cost: 7, clipped: true });
+  expect(trimInk([10, 10, 13, 14], 5)).toEqual({ pts: [10, 10, 13, 14], cost: 5, clipped: false });
+  expect(trimInk([3, 4], 0, [0, 0])).toEqual({ pts: [], cost: 0, clipped: true });
+  expect(allowedTool({ id: 'inkbudget' }, 'fill')).toBe(false);
+  expect(allowedTool({ id: 'inkbudget' }, 'eraser')).toBe(true);
+  expect(allowedTool({ id: 'fivestrokes' }, 'line')).toBe(false);
+});
+
+test('guesser views clear for the final third and use the current deadline', () => {
+  expect(turnProgress(0, 80000)).toBe(0);
+  expect(turnProgress(40000, 40000)).toBe(0.5);
+  expect(turnProgress(10000, 25000)).toBeCloseTo(2 / 7);
+  expect(viewStrength(0, 80000)).toBe(1);
+  expect(viewStrength(40000, 40000)).toBe(0.25);
+  expect(viewStrength(54000, 26000)).toBe(0);
+  expect(viewStrength(80000, 0)).toBe(0);
+  expect(viewStrength(0, 0)).toBe(0);
 });
 
 test('stroke ids are owner-prefixed and stable', () => {

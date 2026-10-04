@@ -5,7 +5,7 @@ Multiplayer draw-and-guess game (skribbl-style). Bun server, plain ES-module cli
 ## Commands
 
 - `bun server.js` — serves `public/` and the `/ws` WebSocket. `PORT` (default 3789) and `HOST` (default 127.0.0.1).
-- `bun test` — the full suite, 57 tests. `game.test.js` starts a real server; the other test files are in-process.
+- `bun test` — the full suite. `game.test.js` starts a real server; the other test files are in-process.
 - `PORT=<port> bun scripts/bot.js <ROOM>` — a scripted second player for browser checks. When it is the drawer, it picks the first word and draws.
 
 ## Layout
@@ -24,7 +24,8 @@ Multiplayer draw-and-guess game (skribbl-style). Bun server, plain ES-module cli
 
 - Every phase change bumps `turnSeq`. State snapshots carry it as `seq`. Turn-bound client actions (`act()` in app.js) echo `seq`, and the server drops stale ones.
 - The server sends a turn's `clear` **before** the matching `state`. The client board follows its own `boardSeq` (`resetBoard` in app.js). Do not gate board resets on `S.seq`. That was the "next drawer sees the old drawing" bug.
-- Chaos stroke effects are applied server-side (`applyChaos`) and painted client-side from stroke flags. View-only modes (`view: true`: fog, quake, spin, negative, pixel, laggy) change only what guessers see. The artist always sees the real board.
+- `chaos` holds the artist challenge; `guesserChaos` holds the guesser challenge. Artist instructions stay private until reveal. Stroke effects run server-side (`applyChaos`); guesser view effects run client-side and clear for the final third.
+- Five Strokes and Ink Budget track consumption separately from the canvas. Undo and clear preserve consumption; each new turn resets it. Mystery Length withholds the entire hint until halfway and reschedules relief after pause or speedup.
 - Scoring (`guesserPts`) counts whole seconds after a 15% grace window. There is no first-guesser bonus, so a 1 ms tie must never change points.
 
 ## Verification traps

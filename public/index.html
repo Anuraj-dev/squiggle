@@ -42,7 +42,7 @@
         <p id="homeErr" class="err" role="alert"></p>
       </div>
       <ul class="perks">
-        <li>💥 26 chaos modes</li>
+        <li>Artist and guesser chaos</li>
         <li>🔥 Streaks</li>
         <li>🖼️ Gallery at the end</li>
       </ul>
@@ -88,13 +88,14 @@
         <div class="board-wrap" id="boardWrap">
           <canvas id="board" width="1000" height="750" aria-label="Drawing canvas"></canvas>
           <canvas id="fx" width="1000" height="750" aria-hidden="true"></canvas>
+          <canvas id="curtain" width="1000" height="750" aria-hidden="true" hidden></canvas>
           <div id="blind" class="blind" hidden><div>🙈<b>Blindfolded!</b><span>Everyone else can see it.</span></div></div>
           <div id="pauseBanner" class="pause-banner" role="status" hidden></div>
-          <div id="modChip" class="mod-chip" hidden></div>
           <button id="settingsPill" class="settings-pill" hidden>⚙️ Back to settings</button>
           <div id="reactLayer" class="react-layer" aria-hidden="true"></div>
           <div id="overlay" class="overlay" hidden></div>
         </div>
+        <div id="challenge" class="challenge" hidden></div>
         <div id="toolbar" class="toolbar" hidden></div>
         <div id="reactbar" class="reactbar" hidden></div>
       </section>
@@ -109,6 +110,15 @@
     </main>
   </section>
 
+  <dialog id="confirmModal" class="card confirm-modal" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <h2 id="confirmTitle"></h2>
+      <div class="confirm-actions">
+        <button class="btn" value="cancel" autofocus>Cancel</button>
+        <button id="confirmAccept" class="btn primary" value="accept"></button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="endModal" class="end-modal" aria-labelledby="endTitle"></dialog>
   <div id="toast" class="toast" role="status"></div>
   <div id="confetti" class="confetti" aria-hidden="true"></div>

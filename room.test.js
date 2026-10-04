@@ -1,16 +1,17 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
-import { beforeEach, expect, test } from 'bun:test';
+import { beforeEach, expect, test, spyOn } from 'bun:test';
 import { clock, onMessage, onClose, rooms } from './game.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS,
   guesserPts, drawerPts, jitterPts,
+  INK_BUDGET, STROKE_BUDGET,
 } from './public/shared.js';
 
 let now = 1e6, timers = [], tid = 0;
 Object.assign(clock, {
   now: () => now,
-  set: (fn, ms) => { const t = { id: ++tid, at: now + Math.max(0, ms || 0), fn }; timers.push(t); return t; },
+  set: (fn, ms) => { const t = { id: ++tid, at: now + Math.floor(Math.max(0, ms || 0)), fn }; timers.push(t); return t; },
   clear: (t) => { timers = timers.filter((x) => x !== t); },
 });
 // Runs due timers in order; `ms` of fake time pass.
@@ -401,11 +402,11 @@ test('choosing times out to a random pick under the fake clock', () => {
   expect(ctx.room.state).toBe('drawing');
 });
 
-test('chaos: off by default, one per turn when on, never the same twice in a row', () => {
+test('chaos: off by default, artist pool never repeats the previous challenge', () => {
   const off = setup(2);
   startDrawing(off);
   expect(off.room.chaos).toBeNull();
-  const ctx = setup(2, { chaos: true, rounds: 5, customWords: 'cat, dog, cow' });
+  const ctx = setup(2, { chaos: true, chaosPool: 'artist', rounds: 5, customWords: 'cat, dog, cow' });
   ctx.ss[0].do('start');
   let prev = null;
   for (let turn = 0; turn < 8; turn++) {
@@ -463,7 +464,158 @@ test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
   const ctx = setup(2, { hints: 5 });
   ctx.ss[0].do('start');
   expect(ctx.room.chaos).toBeNull();
-  ctx.room.chaos = tw('nohints');
+  ctx.room.guesserChaos = tw('nohints');
   ctx.ss.find((x) => x.id === ctx.room.drawerId).act('choose', { i: 0 });
   expect(ctx.room.hintPlan).toEqual([]);
+});
+
+test('five strokes cannot be refilled by undo, clear, or a forbidden tool', () => {
+  const ctx = setup(2);
+  const { drawer } = startDrawing(ctx);
+  ctx.room.chaos = tw('fivestrokes');
+  drawer.act('stroke', { s: { id: 'shape', tool: 'rect', pts: [1, 1, 50, 50] } });
+  expect(ctx.room.strokeUsed).toBe(0);
+  for (let i = 0; i < STROKE_BUDGET; i++) drawer.act('stroke', { s: pen(`p${i}`, [i, i]) });
+  expect(ctx.room.drawBudget()).toEqual({ strokesLeft: 0 });
+  drawer.act('undo');
+  drawer.act('clear');
+  drawer.act('stroke', { s: pen('extra', [10, 10]) });
+  expect(ctx.room.strokes).toHaveLength(0);
+  expect(ctx.room.strokeUsed).toBe(STROKE_BUDGET);
+  expect(drawer.out.findLast((m) => m.t === 'draw-budget').budget.strokesLeft).toBe(0);
+});
+
+test('ink clips at its limit, reconciles the artist, and survives canvas edits', () => {
+  const ctx = setup(2);
+  const { drawer, guessers: [g] } = startDrawing(ctx);
+  ctx.room.chaos = tw('inkbudget');
+  drawer.act('stroke', { s: pen('ink', [0, 100, 999, 100, 0, 100, 999, 100, 0, 100, 999, 100]) });
+  expect(ctx.room.inkUsed).toBe(5001);
+  drawer.act('pts', { id: 'ink', pts: [0, 100, 500, 100] });
+  expect(ctx.room.inkUsed).toBe(INK_BUDGET);
+  expect(ctx.room.strokes[0].pts.slice(-2)).toEqual([0, 100]);
+  expect(g.out.findLast((m) => m.t === 'pts').pts).toEqual([0, 100]);
+  advance(0);
+  expect(drawer.out.findLast((m) => m.t === 'canvas').strokes[0].pts.slice(-2)).toEqual([0, 100]);
+  drawer.act('undo'); drawer.act('clear');
+  drawer.act('stroke', { s: pen('more', [5, 5]) });
+  expect(ctx.room.strokes).toHaveLength(0);
+  expect(ctx.room.drawBudget().inkLeft).toBe(0);
+});
+
+test('ink charges dots, erasing and shapes; fill cannot bypass the limit', () => {
+  const ctx = setup(2);
+  const { drawer } = startDrawing(ctx);
+  ctx.room.chaos = tw('inkbudget');
+  drawer.act('stroke', { s: pen('dot', [1, 1]) });
+  expect(ctx.room.inkUsed).toBe(6);
+  drawer.act('stroke', { s: { ...pen('erase', [1, 1, 4, 5]), tool: 'eraser' } });
+  expect(ctx.room.inkUsed).toBe(17);
+  drawer.act('stroke', { s: { ...pen('box', [0, 0, 100, 100]), tool: 'rect' } });
+  expect(ctx.room.inkUsed).toBe(417);
+  drawer.act('stroke', { s: { ...pen('fill', [50, 50]), tool: 'fill' } });
+  expect(ctx.room.strokes).toHaveLength(3);
+  expect(ctx.room.inkUsed).toBe(417);
+});
+
+test('mystery length stays private until halfway, including across a pause', () => {
+  const ctx = setup(3, { hints: 0 });
+  ctx.ss[0].do('start');
+  ctx.room.guesserChaos = tw('mystery');
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  drawer.act('choose', { i: 0 });
+  const guessers = ctx.ss.filter((s) => s !== drawer);
+  for (const g of guessers) expect(g.state().hint).toBeNull();
+  expect(drawer.state().word).toBe(ctx.room.word);
+  advance(20000);
+  drawer.drop(); advance(10000);
+  for (const g of guessers) expect(g.state().hint).toBeNull();
+  const token = drawer.out.find((m) => m.t === 'welcome').token;
+  const returning = sock('Return'); returning.do('join', { room: ctx.code, token, name: 'Return' });
+  advance(19999);
+  for (const g of guessers) expect(g.state().hint).toBeNull();
+  advance(1);
+  for (const g of guessers) expect(g.state().hint).toBe(ctx.room.hint());
+});
+
+test('a speedup advances mystery length relief for every remaining guesser', () => {
+  const ctx = setup(3, { hints: 0 });
+  ctx.ss[0].do('start'); ctx.room.guesserChaos = tw('mystery');
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  drawer.act('choose', { i: 0 });
+  const [a, b] = ctx.ss.filter((s) => s !== drawer);
+  advance(10001); a.act('chat', { text: ctx.room.word });
+  expect(ctx.room.timeLeft()).toBe(25000);
+  advance(7499); expect(b.state().hint).toBeNull();
+  advance(1); expect(b.state().hint).toBe(ctx.room.hint());
+});
+
+test('rescue is artist-only, once per match, and survives reconnect', () => {
+  const ctx = setup(2, { chaos: 'always', chaosPool: 'artist' });
+  ctx.ss[0].do('start');
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId), other = ctx.ss.find((s) => s !== drawer);
+  const original = ctx.room.chaos.id, deadline = ctx.room.deadline;
+  other.act('rescue'); drawer.do('rescue', { seq: ctx.room.turnSeq - 1 });
+  expect(ctx.room.chaos.id).toBe(original);
+  const otherToken = other.out.find((m) => m.t === 'welcome').token;
+  other.drop();
+  expect(drawer.state().canRescue).toBe(false);
+  drawer.act('rescue'); expect(ctx.room.chaos.id).toBe(original);
+  const otherReturn = sock('ReturnOther');
+  otherReturn.do('join', { room: ctx.code, token: otherToken });
+  otherReturn.id = other.id;
+  ctx.ss[ctx.ss.indexOf(other)] = otherReturn;
+  expect(drawer.state().canRescue).toBe(true);
+  drawer.act('rescue');
+  const replacement = ctx.room.chaos.id;
+  expect(replacement).not.toBe(original);
+  expect(ctx.room.deadline).toBe(deadline);
+  drawer.act('rescue'); expect(ctx.room.chaos.id).toBe(replacement);
+  const token = drawer.out.find((m) => m.t === 'welcome').token;
+  drawer.drop(); const returning = sock('Return'); returning.do('join', { room: ctx.code, token });
+  expect(returning.state().canRescue).toBe(false);
+  returning.act('rescue'); expect(ctx.room.chaos.id).toBe(replacement);
+  ctx.room.queue = [drawer.id];
+  returning.act('choose', { i: 0 }); returning.act('skip'); advance(6000);
+  expect(ctx.room.drawerId).toBe(drawer.id);
+  expect(returning.state().canRescue).toBe(false);
+  ctx.room.toLobby();
+  ctx.ss.find((s) => s.id === ctx.room.hostId).do('start');
+  expect(ctx.room.players.get(drawer.id).rescued).toBe(false);
+});
+
+test('presets use separate pools; mixed chooses either role or a mild pair', () => {
+  const ctx = setup(2, { chaos: 'always' });
+  const rng = spyOn(Math, 'random');
+  try {
+    for (const target of ['artist', 'guesser']) {
+      ctx.room.settings.chaosPool = target; rng.mockReturnValue(0.4); ctx.room.rollChaos();
+      expect((target === 'artist' ? ctx.room.chaos : ctx.room.guesserChaos).target).toBe(target);
+      expect(target === 'artist' ? ctx.room.guesserChaos : ctx.room.chaos).toBeNull();
+    }
+    ctx.room.settings.chaosPool = 'mixed';
+    rng.mockReturnValueOnce(0.3).mockReturnValueOnce(0.4); ctx.room.rollChaos();
+    expect(ctx.room.chaos).not.toBeNull(); expect(ctx.room.guesserChaos).toBeNull();
+    rng.mockReturnValueOnce(0.3).mockReturnValueOnce(0.6); ctx.room.rollChaos();
+    expect(ctx.room.chaos).toBeNull(); expect(ctx.room.guesserChaos).not.toBeNull();
+    rng.mockReturnValueOnce(0.1); ctx.room.rollChaos();
+    expect(ctx.room.chaos.mild).toBe(true); expect(ctx.room.guesserChaos.mild).toBe(true);
+    expect(['mystery', 'curtain']).toContain(ctx.room.guesserChaos.id);
+  } finally { rng.mockRestore(); }
+});
+
+test('role cards keep artist instructions private and reveal both challenges afterward', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start'); ctx.room.chaos = { ...tw('fivestrokes'), name: 'Five Strokes', desc: 'Five pen strokes.' };
+  ctx.room.guesserChaos = { ...tw('curtain'), name: 'Curtain Reveal', desc: 'The drawing opens in strips.' };
+  ctx.room.sync();
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId), guessers = ctx.ss.filter((s) => s !== drawer);
+  for (const g of guessers) { expect(g.state().chaos).toBeNull(); expect(g.state().guesserChaos.id).toBe('curtain'); }
+  drawer.act('choose', { i: 0 });
+  for (const g of guessers) { expect(g.state().chaos.name).toBeUndefined(); expect(g.state().word).toBeNull(); }
+  drawer.act('skip');
+  for (const g of guessers) {
+    expect(g.state().reveal.artistChaos.name).toBe('Five Strokes');
+    expect(g.state().reveal.guesserChaos.name).toBe('Curtain Reveal');
+  }
 });

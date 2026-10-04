@@ -173,7 +173,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 
 .stage { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; min-width: 0; min-height: 0; }
 .board-wrap {
-  position: relative; width: min(100%, calc((100dvh - 68px - 2rem - var(--below, 84px)) * 4 / 3)); aspect-ratio: 4 / 3;
+  position: relative; width: min(100%, calc((100dvh - 68px - 2rem - var(--below, 136px)) * 4 / 3)); aspect-ratio: 4 / 3;
   border: var(--line); border-radius: var(--r); box-shadow: var(--shadow); background: #fff; overflow: hidden; flex: none;
 }
 #board, #fx { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
@@ -182,10 +182,16 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .blind { position: absolute; inset: 0; background: repeating-linear-gradient(45deg, #2a2724 0 18px, #1d1b1a 18px 36px); display: grid; place-items: center; color: #fff; text-align: center; pointer-events: none; font-size: 3rem; }
 .blind b { display: block; font-size: 1.5rem; margin-top: 0.3rem; }
 .blind span { display: block; font-size: 0.95rem; color: #d8d0c4; }
-.mod-chip {
-  position: absolute; top: 10px; left: 50%; transform: translateX(-50%) rotate(-2deg); background: var(--grape); color: #fff;
-  border: var(--line); border-radius: 999px; padding: 0.3rem 0.9rem; font-weight: 800; box-shadow: var(--shadow-sm); pointer-events: none; white-space: nowrap; z-index: 2;
-}
+#curtain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.challenge { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; max-width: 1000px; padding: 0.5rem 0.8rem; background: #e8dcff; border: var(--line); border-radius: 12px; }
+.challenge.guesser { background: #dfe7f5; }
+.challenge > div:first-child { display: flex; flex-wrap: wrap; gap: 0.3rem 0.7rem; align-items: baseline; }
+.challenge span { font-size: 0.85rem; }
+.budget { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.budget meter { width: 90px; height: 16px; accent-color: #6840aa; }
+.choice-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
+.challenge-recap { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem 1rem; font-size: 0.85rem; }
+.lobby .mode-field { grid-column: 1 / -1; }
 .settings-pill { position: absolute; top: 10px; left: 10px; z-index: 3; }
 .settings-pill, .overlay .btn { font-size: 0.95rem; }
 .react-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; }
@@ -208,8 +214,10 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 }
 .choice:hover { transform: translate(-2px, -2px) rotate(-1.5deg); box-shadow: 6px 6px 0 var(--ink); }
 .choice .w { font-size: 1.35rem; font-weight: 800; overflow-wrap: anywhere; max-width: 16ch; }
-.mod-card { background: var(--grape); color: #fff; border: var(--line); border-radius: var(--r); padding: 0.7rem 1rem; box-shadow: var(--shadow-sm); transform: rotate(-1.5deg); }
+.mod-card { background: #e8dcff; color: var(--ink); border: var(--line); border-radius: var(--r); padding: 0.7rem 1rem; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 0.2rem; }
+.mod-card.guesser { background: #dfe7f5; }
 .mod-card b { font-size: 1.1rem; }
+.mod-card span { font-size: 0.9rem; }
 .big-av { width: 84px; height: 84px; font-size: 2.8rem; animation: wiggle 1.2s infinite; }
 @keyframes wiggle { 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
 .reveal-word { font-size: clamp(2rem, 6vw, 3.4rem); font-weight: 800; letter-spacing: -0.02em; transform: rotate(-2deg); background: var(--sun); border: var(--line); padding: 0.1rem 1rem; border-radius: 12px; box-shadow: var(--shadow); animation: pop 0.5s; }
@@ -277,6 +285,11 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .chat-form { display: flex; gap: 0.4rem; padding: 0.5rem; border-top: var(--line); }
 .chat-form .btn { padding: 0.4rem 0.8rem; }
 
+.confirm-modal { width: min(420px, calc(100% - 2rem)); padding: 1.2rem; }
+.confirm-modal::backdrop { background: rgba(29, 27, 26, 0.55); }
+.confirm-modal h2 { margin: 0 0 1.2rem; font-size: 1.3rem; overflow-wrap: anywhere; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+
 /* end */
 .end-modal { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; background: rgba(29, 27, 26, 0.55); overflow-y: auto; padding: 2rem 1rem; color: inherit; }
 .end-modal[open] { display: grid; place-items: start center; animation: fadeIn 0.3s; }
@@ -328,7 +341,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 
 /* ---------- responsive ---------- */
 /* The toolbar wraps to two rows below ~1400px; reserve room for it. */
-@media (max-width: 1400px) { .board-wrap { --below: 130px; } }
+@media (max-width: 1400px) { .board-wrap { --below: 182px; } }
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 190px minmax(0, 1fr) 260px; gap: 0.7rem; padding: 0.7rem; }
   .palette { grid-template-columns: repeat(9, 20px); }
@@ -356,7 +369,10 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
   .pl .badges { grid-column: 1 / -1; justify-content: center; }
   .pl .nm { max-width: 80px; font-size: 0.85rem; }
   .chat { order: 3; height: 44dvh; min-height: 260px; box-shadow: var(--shadow-sm); }
+  .game .layout { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .chat-form { position: fixed; bottom: 0; left: 0; width: 100%; z-index: 21; background: var(--card); padding-bottom: calc(0.5rem + env(safe-area-inset-bottom)); }
   .toolbar { gap: 0.4rem; }
+  .challenge { flex-wrap: wrap; gap: 0.4rem; padding: 0.5rem 0.65rem; }
   .tbtn { width: 34px; height: 34px; }
   .palette { grid-template-columns: repeat(9, minmax(0, 1fr)); width: 100%; }
   .sw { width: 100%; height: 24px; }
@@ -400,14 +416,6 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .chaos-list li { display: flex; flex-direction: column; font-size: 0.85rem; }
 .chaos-list li small { color: var(--ink-2); }
 .tgroup.pal.locked { opacity: 0.35; pointer-events: none; }
-
-/* ---------- chaos: guesser-only views (the artist sees the real board) ---------- */
-.board-wrap.v-fog #board { filter: blur(var(--fog, 12px)); }
-.board-wrap.v-negative #board { filter: invert(1) hue-rotate(180deg); }
-.board-wrap.v-quake #board { animation: quake 0.35s infinite; }
-.board-wrap.v-spin #board { animation: spin 14s linear infinite; }
-@keyframes quake { 0%, 100% { transform: translate(0, 0); } 20% { transform: translate(-7px, 4px) rotate(-1deg); } 40% { transform: translate(6px, -5px); } 60% { transform: translate(-4px, -3px) rotate(1deg); } 80% { transform: translate(5px, 5px); } }
-@keyframes spin { from { transform: scale(0.78) rotate(0deg); } to { transform: scale(0.78) rotate(360deg); } }
 
 /* ---------- music player ---------- */
 .music { position: relative; }

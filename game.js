@@ -5,7 +5,8 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  CHAOS_LEVELS, clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
+  CHAOS_LEVELS, CHAOS_POOLS, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress,
+  clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
 } from './public/shared.js';
@@ -17,7 +18,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'off', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'off', chaosPool: 'mixed', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
@@ -79,7 +80,11 @@ export class Room {
     this.gallery = [];
     this.used = new Set();
     this.chaos = null;
+    this.guesserChaos = null;
     this.lastChaosId = null;
+    this.lastGuesserChaosId = null;
+    this.inkUsed = 0;
+    this.strokeUsed = 0;
     this.banned = new Set();
     this.reveal = null;
     this.endData = null;
@@ -144,6 +149,7 @@ export class Room {
 
   snapshot(p) {
     const drawing = this.state === 'drawing';
+    const hideLength = drawing && is(this.guesserChaos, 'mystery') && turnProgress(this.clockMs(), this.timeLeft()) < 0.5;
     return {
       you: p.id,
       code: this.code,
@@ -157,12 +163,16 @@ export class Room {
       gameMs: this.clockMs(),
       seq: this.turnSeq,
       paused: this.pausedAt ? { reason: this.pauseReason, until: this.pauseUntil() } : null,
-      hint: this.word && drawing ? this.hint() : null,
+      hint: this.word && drawing && !hideLength ? this.hint() : null,
       word: this.word && this.canSeeWord(p) ? this.word : null,
       diff: this.word ? this.diff : null,
       choices: this.state === 'choosing' && p.id === this.drawerId ? this.choices : null,
       rerolled: this.rerolled,
-      chaos: this.chaos,
+      chaos: this.chaos && (p.id === this.drawerId || this.state === 'reveal' ? this.chaos
+        : drawing ? { id: this.chaos.id, seed: this.chaos.seed } : null),
+      guesserChaos: this.guesserChaos,
+      budget: p.id === this.drawerId ? this.drawBudget() : null,
+      canRescue: this.state === 'choosing' && !this.pausedAt && !this.pastDeadline() && p.id === this.drawerId && !!this.chaos && !p.rescued,
       spectating: drawing && p.id !== this.drawerId && !this.turnEligible.includes(p.id),
       reveal: this.state === 'reveal' ? this.reveal : null,
       end: this.state === 'end' ? this.endData : null,
@@ -174,6 +184,35 @@ export class Room {
   }
 
   sync() { for (const p of this.players.values()) this.send(p, 'state', this.snapshot(p)); }
+
+  drawBudget() {
+    if (is(this.chaos, 'fivestrokes')) return { strokesLeft: Math.max(0, STROKE_BUDGET - this.strokeUsed) };
+    if (is(this.chaos, 'inkbudget')) return { inkLeft: Math.max(0, INK_BUDGET - this.inkUsed) };
+    return null;
+  }
+
+  sendBudget(p) {
+    const budget = this.drawBudget();
+    if (budget) this.send(p, 'draw-budget', { seq: this.turnSeq, budget });
+  }
+
+  rollChaos() {
+    this.chaos = null;
+    this.guesserChaos = null;
+    if (this.settings.chaos === 'off' || (this.settings.chaos === 'some' && Math.random() >= 0.5)) return;
+    const seed = () => (Math.random() * 0xffffffff) >>> 0;
+    const pool = this.settings.chaosPool;
+    const both = pool === 'mixed' && Math.random() < 0.2;
+    const target = pool === 'mixed' ? (Math.random() < 0.5 ? 'artist' : 'guesser') : pool;
+    if (both || target === 'artist') {
+      this.chaos = pickChaos(seed(), this.lastChaosId, 'artist', both);
+      this.lastChaosId = this.chaos.id;
+    }
+    if (both || target === 'guesser') {
+      this.guesserChaos = pickChaos(seed(), this.lastGuesserChaosId, 'guesser', both);
+      this.lastGuesserChaosId = this.guesserChaos.id;
+    }
+  }
 
   clearTimeoutsOnly() {
     this.timers.forEach(clock.clear);
@@ -214,6 +253,11 @@ export class Room {
     const remaining = this.timeLeft();
     const pending = this.hintPlan.filter((idx) => !this.revealed.includes(idx));
     const seq = this.turnSeq;
+    if (is(this.guesserChaos, 'mystery') && this.clockMs() < remaining) {
+      this.timers.push(clock.set(() => {
+        if (this.turnSeq === seq && this.state === 'drawing' && !this.pausedAt) this.sync();
+      }, Math.ceil((remaining - this.clockMs()) / 2)));
+    }
     pending.forEach((idx, k) => {
       this.timers.push(clock.set(() => {
         if (this.turnSeq !== seq || this.state !== 'drawing' || this.pausedAt) return;
@@ -259,7 +303,7 @@ export class Room {
     if (this.settings.customOnly && this.settings.customWords.length < 2) {
       return this.send(p, 'toast', { text: 'Add at least 2 of your own words first' });
     }
-    for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null });
+    for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false });
     this.gallery = [];
     this.used.clear();
     this.round = 0;
@@ -310,10 +354,9 @@ export class Room {
     this.resetCanvas();
     this.guessed.clear();
     this.lateSolved.clear();
-    const seed = (Math.random() * 0xffffffff) >>> 0 || 1;
-    const level = this.settings.chaos;
-    this.chaos = level === 'always' || (level === 'some' && Math.random() < 0.5) ? pickChaos(seed, this.lastChaosId) : null;
-    if (this.chaos) this.lastChaosId = this.chaos.id;
+    this.inkUsed = 0;
+    this.strokeUsed = 0;
+    this.rollChaos();
     this.choices = this.pickWords(this.settings.wordChoices);
     this.phase(CHOOSE_MS, () => this.choose(Math.floor(Math.random() * this.choices.length)));
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
@@ -358,6 +401,8 @@ export class Room {
     if (!c) return this.nextTurn();
     this.beginPhase('drawing');
     this.resetCanvas();
+    this.inkUsed = 0;
+    this.strokeUsed = 0;
     this.word = c.word;
     this.diff = c.diff;
     this.choices = [];
@@ -370,7 +415,7 @@ export class Room {
     this.scoreLen = ms;
     this.phase(ms, () => this.endTurn('time'));
     const letters = [...c.word].map((ch, idx) => (/[a-z0-9]/i.test(ch) ? idx : -1)).filter((idx) => idx >= 0);
-    const hints = is(this.chaos, 'nohints') ? 0 : this.settings.hints;
+    const hints = is(this.guesserChaos, 'nohints') ? 0 : this.settings.hints;
     this.hintPlan = shuffle(letters).slice(0, Math.min(hints, Math.floor(letters.length / 2)));
     this.scheduleHints();
     this.system(`✏️ ${this.players.get(this.drawerId).name} is drawing`, 'turn');
@@ -384,7 +429,7 @@ export class Room {
   }
 
   awardDrawer() {
-    const total = drawerPts({ solved: this.guessed.size, eligible: this.turnEligible.length, diff: this.diff, chaos: this.chaos });
+    const total = drawerPts({ solved: this.guessed.size, eligible: this.turnEligible.length, diff: this.diff, chaos: this.chaos || this.guesserChaos });
     const drawer = this.players.get(this.drawerId);
     if (drawer) drawer.score += total - this.drawerAward;
     this.drawerAward = total;
@@ -423,7 +468,7 @@ export class Room {
     const first = this.guessed.size === 0;
     p.streak++;
     p.bestStreak = Math.max(p.bestStreak, p.streak);
-    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: this.chaos, streak: p.streak });
+    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: this.chaos || this.guesserChaos, streak: p.streak });
     this.guessed.set(p.id, { pts, ms: elapsed, name: p.name });
     p.score += pts;
     if (p.fastest == null || elapsed < p.fastest) p.fastest = elapsed;
@@ -450,7 +495,7 @@ export class Room {
     this.awardDrawer();
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
     if (this.strokes.length) this.gallery.push({
-      word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos,
+      word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos,
       drawer: drawer ? { id: drawer.id, name: drawer.name, avatar: drawer.avatar, color: drawer.color } : null,
     });
     for (const id of this.turnEligible) {
@@ -459,7 +504,7 @@ export class Room {
     }
     const deltas = [...this.guessed.entries()].map(([id, x]) => ({ id, name: x.name, pts: x.pts, ms: x.ms }));
     if (drawer) deltas.unshift({ id: drawer.id, name: drawer.name, pts: this.drawerAward, drawer: true });
-    this.reveal = { word: this.word, reason, deltas };
+    this.reveal = { word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos };
     this.phase(REVEAL_MS, () => this.nextTurn());
     this.broadcast('sfx', { s: reason === 'all' ? 'allgot' : 'reveal' });
     this.updatePause();
@@ -483,7 +528,7 @@ export class Room {
     award('🤏', 'Sooo Close', close, (p) => p.name, close.length ? `${close[0].close} near-miss${close[0].close > 1 ? 'es' : ''}` : '');
     this.beginPhase('end');
     this.endData = { ranking: tiedRanking(players), awards };
-    Object.assign(this, { drawerId: null, word: null, chaos: null, turnEligible: [] });
+    Object.assign(this, { drawerId: null, word: null, chaos: null, guesserChaos: null, turnEligible: [] });
     this.resetCanvas();
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
     this.broadcast('gallery', { gallery: this.gallery });
@@ -494,7 +539,7 @@ export class Room {
   toLobby(msg) {
     this.beginPhase('lobby');
     Object.assign(this, {
-      drawerId: null, word: null, chaos: null, round: 0, reveal: null, endData: null, turnEligible: [],
+      drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [],
     });
     this.resetCanvas();
     this.guessed.clear();
@@ -574,6 +619,7 @@ export class Room {
   // Gate for every canvas mutation: right phase token, right role, not paused.
   drawGate(p, m, id) {
     if (m.seq !== this.turnSeq) { this.rejectDraw(p, 'stale', id); return false; }
+    if (this.state === 'drawing' && this.pastDeadline()) { this.rejectDraw(p, 'stale', id); return false; }
     if (this.canDraw(p)) return true;
     if (this.pausedAt && (this.state === 'lobby' || p.id === this.drawerId)) this.rejectDraw(p, 'paused', id);
     return false;
@@ -590,6 +636,7 @@ const handlers = {
       rounds: clamp(s.rounds, 1, 10, DEFAULTS.rounds),
       drawTime: clamp(s.drawTime, 20, 240, DEFAULTS.drawTime),
       chaos: CHAOS_LEVELS.includes(s.chaos) ? s.chaos : s.chaos === true ? 'always' : 'off',
+      chaosPool: CHAOS_POOLS.includes(s.chaosPool) ? s.chaosPool : DEFAULTS.chaosPool,
       wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),
       hints: clamp(s.hints, 0, 5, DEFAULTS.hints),
       difficulty: DIFFICULTIES.includes(s.difficulty) ? s.difficulty : 'mix',
@@ -612,6 +659,13 @@ const handlers = {
     room.choices = next;
     room.sync();
   },
+  rescue(room, p, m) {
+    if (p.id !== room.drawerId || room.state !== 'choosing' || m.seq !== room.turnSeq || p.rescued || !room.chaos || room.pausedAt || room.pastDeadline()) return;
+    room.chaos = pickChaos((Math.random() * 0xffffffff) >>> 0, room.chaos.id, 'artist', !!room.guesserChaos);
+    room.lastChaosId = room.chaos.id;
+    p.rescued = true;
+    room.sync();
+  },
   skip(room, p, m) {
     if (p.id === room.drawerId && room.state === 'drawing' && m.seq === room.turnSeq && room.guessed.size === 0 && !room.pausedAt) {
       room.endTurn('skip');
@@ -630,13 +684,30 @@ const handlers = {
     const gm = room.clockMs();
     if (!lobby && !allowedTool(room.chaos, v.tool)) return room.rejectDraw(p, 'tool', id);
     if (!lobby && is(room.chaos, 'onestroke') && room.strokes.some((s) => s.by === p.id)) return room.rejectDraw(p, 'onestroke', id);
+    if (!lobby && is(room.chaos, 'fivestrokes') && room.strokeUsed >= STROKE_BUDGET) return room.rejectDraw(p, 'strokes', id);
     if (room.coordCount + v.pts.length > MAX_TURN_COORDS) return room.rejectDraw(p, 'budget', id);
-    const pts = room.shaky() && v.tool !== 'fill' ? jitterPts(id, v.pts) : v.pts;
+    let pts = room.shaky() && v.tool !== 'fill' ? jitterPts(id, v.pts) : v.pts;
+    let clipped = false, cost = 0;
+    if (!lobby && is(room.chaos, 'inkbudget')) {
+      const left = INK_BUDGET - room.inkUsed;
+      if (left < v.size) return room.rejectDraw(p, 'ink', id);
+      if (v.tool === 'pen' || v.tool === 'eraser') {
+        const trimmed = trimInk(pts, left - v.size);
+        pts = trimmed.pts; cost = trimmed.cost + v.size; clipped = trimmed.clipped;
+      } else {
+        cost = inkCost(v);
+        if (cost > left) return room.rejectDraw(p, 'ink', id);
+      }
+    }
     let out = { id, by: p.id, tool: v.tool, color: v.color, size: v.size, pts, t: gm };
     if (!lobby) out = applyChaos(out, room.chaos);
     room.coordCount += pts.length;
     room.strokes.push(out);
+    room.strokeUsed++;
+    room.inkUsed += cost;
     room.broadcast('stroke', { s: out, seq: room.turnSeq });
+    room.sendBudget(p);
+    if (clipped) room.rejectDraw(p, 'ink', id);
   },
   pts(room, p, m) {
     const id = strokeId(p.id, m.id);
@@ -647,9 +718,17 @@ const handlers = {
     if (!add) return room.rejectDraw(p, 'pts', id);
     if (s.pts.length + add.length > MAX_STROKE_PTS || room.coordCount + add.length > MAX_TURN_COORDS) return room.rejectDraw(p, 'budget', id);
     if (room.shaky()) add = jitterPts(id, add, s.pts.length / 2);
+    let clipped = false;
+    if (is(room.chaos, 'inkbudget')) {
+      if (room.inkUsed >= INK_BUDGET) return room.rejectDraw(p, 'ink', id);
+      const trimmed = trimInk(add, INK_BUDGET - room.inkUsed, s.pts.slice(-2));
+      add = trimmed.pts; clipped = trimmed.clipped; room.inkUsed += trimmed.cost;
+    }
     s.pts.push(...add);
     room.coordCount += add.length;
     room.broadcast('pts', { id, pts: add, seq: room.turnSeq }, p.id);
+    room.sendBudget(p);
+    if (clipped) room.rejectDraw(p, 'ink', id);
   },
   undo(room, p, m) {
     if (!room.drawGate(p, m)) return;
@@ -716,7 +795,7 @@ function addPlayer(ws, room, { name, avatar, color, token }) {
     }
     p = {
       id: crypto.randomUUID().slice(0, 8), token: crypto.randomUUID(), name, avatar, color, ws, connected: true,
-      score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, dropTimer: null, dropDeadline: 0,
+      score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false, dropTimer: null, dropDeadline: 0,
     };
     room.players.set(p.id, p);
     room.order.push(p.id);

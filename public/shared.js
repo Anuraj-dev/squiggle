@@ -13,9 +13,9 @@ export const LOBBY_GRACE = 20000, GAME_GRACE = 120000;
 export const SPEEDUP_LEFT = 25000;
 export const TOOLS = new Set(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse']);
 export const JITTER = 7;
+export const INK_BUDGET = 6000, STROKE_BUDGET = 5;
 
-// Chaos modes: one silly rule per turn. `view` modes only change what the
-// guessers see; everything else is enforced on the strokes themselves.
+// Artist rules affect tools and strokes. Guesser rules affect clues and the view.
 export const CHAOS_MODES = [
   { id: 'mirror', icon: '🪞', name: 'Mirror Mirror', desc: 'Everything you draw is mirrored' },
   { id: 'onestroke', icon: '➰', name: 'One Line', desc: 'One pen stroke — don’t lift!' },
@@ -42,16 +42,61 @@ export const CHAOS_MODES = [
   { id: 'spin', icon: '🎠', name: 'Merry-Go-Round', desc: 'The canvas slowly spins for guessers', view: true },
   { id: 'negative', icon: '🌚', name: 'Negative', desc: 'Guessers see inverted colors', view: true },
   { id: 'pixel', icon: '👾', name: '8-Bit', desc: 'Guessers see chunky pixels', view: true },
-  { id: 'laggy', icon: '🐌', name: 'Laggy Stream', desc: 'Guessers see your drawing 4 seconds late', view: true },
-];
+  { id: 'laggy', icon: '🐌', name: 'Laggy Stream', desc: 'Strokes arrive late, then catch up.', view: true },
+  { id: 'fivestrokes', icon: '✋', name: 'Five Strokes', desc: "Five pen strokes. Undo and clear don't restore them." },
+  { id: 'inkbudget', icon: '🖋️', name: 'Ink Budget', desc: "Erasing uses ink. Undo and clear don't refill it.", mild: true },
+  { id: 'mystery', icon: '❓', name: 'Mystery Length', desc: 'Word length appears halfway through.', view: true, mild: true },
+  { id: 'curtain', icon: '🎭', name: 'Curtain Reveal', desc: 'The drawing opens in strips.', view: true, mild: true },
+].map((mode) => ({ ...mode, target: mode.view || mode.id === 'nohints' ? 'guesser' : 'artist',
+  mild: mode.mild || ['tiny', 'rainbow', 'onecolor', 'dotted'].includes(mode.id) }));
 export const CHAOS_LEVELS = ['off', 'some', 'always'];
+export const CHAOS_POOLS = ['artist', 'guesser', 'mixed'];
 export const LAG_MS = 4000, MEMORY_STROKES = 4;
 // Saturated inks for One Color / Mystery Ink.
 export const INKS = ['#e8322a', '#ff7a2f', '#1f9d55', '#2ec4d6', '#3d7bff', '#9b6bff', '#ff4fa3', '#8a4b2a'];
 
-export function pickChaos(seed, prevId) {
-  const pool = CHAOS_MODES.filter((t) => t.id !== prevId);
+export function pickChaos(seed, prevId, target, mild = false) {
+  const pool = CHAOS_MODES.filter((t) => t.id !== prevId && (!target || t.target === target) && (!mild || t.mild));
   return { ...pool[seed % pool.length], seed };
+}
+
+// Same elapsed clock and deadline for every guesser. A speedup brings relief forward.
+export function turnProgress(elapsed, left) {
+  return elapsed + left > 0 ? Math.min(1, Math.max(0, elapsed / (elapsed + left))) : 1;
+}
+export const viewStrength = (elapsed, left) => Math.max(0, 1 - turnProgress(elapsed, left) * 1.5);
+
+export function inkCost(s, previous) {
+  const p = s.pts;
+  if (s.tool === 'rect') return 2 * (Math.abs(p[2] - p[0]) + Math.abs(p[3] - p[1]));
+  if (s.tool === 'ellipse') {
+    const a = Math.abs(p[2] - p[0]) / 2, b = Math.abs(p[3] - p[1]) / 2;
+    return Math.PI * (3 * (a + b) - Math.sqrt((3 * a + b) * (a + 3 * b)));
+  }
+  // Charge the initial mark too, so repeated dots cannot bypass the budget.
+  let cost = previous ? 0 : s.size, last = previous || p.slice(0, 2);
+  for (let i = previous ? 0 : 2; i < p.length; i += 2) {
+    cost += Math.hypot(p[i] - last[0], p[i + 1] - last[1]);
+    last = p.slice(i, i + 2);
+  }
+  return cost;
+}
+
+// Freehand ink ends exactly at the remaining budget, rather than dropping its tail.
+export function trimInk(pts, remaining, previous) {
+  const out = [], start = previous ? 0 : 2;
+  let last = previous || pts.slice(0, 2), spent = 0;
+  if (!previous) out.push(...last);
+  for (let i = start; i < pts.length; i += 2) {
+    const next = pts.slice(i, i + 2), distance = Math.hypot(next[0] - last[0], next[1] - last[1]);
+    if (spent + distance > remaining) {
+      const part = Math.max(0, remaining - spent) / distance;
+      if (part > 0) out.push(last[0] + (next[0] - last[0]) * part, last[1] + (next[1] - last[1]) * part);
+      return { pts: out, cost: Math.max(0, remaining), clipped: true };
+    }
+    out.push(...next); spent += distance; last = next;
+  }
+  return { pts: out, cost: spent, clipped: false };
 }
 
 export const is = (chaos, id) => chaos?.id === id;
@@ -175,7 +220,7 @@ export function validateStroke(s) {
   if (!s || typeof s !== 'object') return { ok: false, reason: 'invalid' };
   if (!clean(s.id, 40).replace(/[^\w:-]/g, '')) return { ok: false, reason: 'id' };
   const tool = s.tool;
-  const spec = TOOL_SPEC[tool];
+  const spec = Object.hasOwn(TOOL_SPEC, tool) && TOOL_SPEC[tool];
   if (!spec) return { ok: false, reason: 'tool' };
   const n = Array.isArray(s.pts) ? s.pts.length : -1;
   if (spec.exact != null ? n !== spec.exact : (n < spec.min || n > spec.max)) return { ok: false, reason: 'pts' };
@@ -190,6 +235,8 @@ export function validateStroke(s) {
 export function allowedTool(chaos, tool) {
   if (!TOOLS.has(tool)) return false;
   if (is(chaos, 'onestroke')) return tool === 'pen';
+  if (is(chaos, 'fivestrokes')) return tool === 'pen';
+  if (is(chaos, 'inkbudget')) return tool !== 'fill';
   if (is(chaos, 'fade')) return tool !== 'fill';
   if (is(chaos, 'shapes')) return tool !== 'pen' && tool !== 'eraser';
   if (is(chaos, 'permanent')) return tool !== 'eraser';

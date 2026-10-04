@@ -1,5 +1,6 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES } from './shared.js';
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
+  INK_BUDGET, viewStrength } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { createMusic } from './music.js';
 
@@ -216,18 +217,38 @@ function goHome(err) {
   cancelLocal();
   overlayKey = ''; toolbarKey = ''; lobbyMinimized = false;
   closeDialogs();
+  if ($('#confirmModal').open) $('#confirmModal').close();
   $('#game').hidden = true;
   $('#home').hidden = false;
   $('#homeErr').textContent = err || '';
   document.title = 'Squiggle — draw badly, guess wildly';
 }
 
-$('#leaveBtn').onclick = () => {
-  if (S && S.state !== 'lobby' && S.state !== 'end' && !confirm('Leave this game?')) return;
+function confirmAction(title, action, accept) {
+  const modal = $('#confirmModal');
+  if (modal.open) return;
+  const room = roomCode, seq = S?.seq, player = myId, opener = document.activeElement;
+  $('#confirmTitle').textContent = title;
+  $('#confirmAccept').textContent = action;
+  modal.returnValue = '';
+  modal.addEventListener('close', () => {
+    // A delayed confirmation must never act in a different room or phase.
+    if (modal.returnValue === 'accept' && S && roomCode === room && myId === player && S.seq === seq) accept();
+    if (opener?.isConnected && !opener.closest('[hidden]')) opener.focus();
+    else (S ? $('#leaveBtn') : $('#createBtn')).focus();
+  }, { once: true });
+  modal.showModal();
+}
+
+function leaveRoom() {
   send('leave');
   delete tokens[roomCode]; store.set('sq-tokens', tokens);
   history.replaceState(null, '', location.pathname);
   goHome();
+}
+$('#leaveBtn').onclick = () => {
+  if (S && S.state !== 'lobby' && S.state !== 'end') confirmAction('Leave this game?', 'Leave', leaveRoom);
+  else leaveRoom();
 };
 
 const inviteLink = () => `${location.origin}${location.pathname}?r=${roomCode}`;
@@ -301,6 +322,9 @@ function onMsg(m) {
       toast(rejectText(m.reason));
       if (!m.id || cur?.id === m.id || shape?.id === m.id) cancelLocal();
       break;
+    case 'draw-budget':
+      if (S && sameTurn(m)) { S.budget = m.budget; renderChallenge(); }
+      break;
     case 'chat': addMsg(m); break;
     case 'react': floatReaction(m); break;
     case 'sfx': play(m.s); if (m.s === 'correct') confetti(40); break;
@@ -320,6 +344,8 @@ function rejectText(reason) {
     tool: 'That tool is off this turn!',
     budget: 'The canvas is full',
     onestroke: 'One stroke only!',
+    strokes: 'All five strokes used',
+    ink: 'Ink limit reached',
     locked: 'Not with this chaos!',
     paused: 'Game is paused',
   })[reason] || 'Oops — board resynced';
@@ -334,15 +360,18 @@ let strokes = [], dirty = true, lastFade = 0;
 
 const gameMs = () => clientClock(S, stateRecvAt, performance.now()).gameMs;
 const liveChaos = (id) => S?.state === 'drawing' && is(S.chaos, id);
-// Guesser-only chaos views; the artist always sees the real board.
-const guesserView = (id) => liveChaos(id) && S.drawerId !== myId;
+const guesserView = (id) => S?.state === 'drawing' && is(S.guesserChaos, id) && S.drawerId !== myId;
+const strength = () => {
+  const { left, gameMs: elapsed } = clientClock(S, stateRecvAt, performance.now());
+  return viewStrength(elapsed, left);
+};
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || guesserView('laggy');
+const timed = () => fading() || guesserView('laggy') || guesserView('pixel');
 const renderOpts = () => ({
   chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  lagMs: guesserView('laggy') ? LAG_MS : 0,
+  lagMs: guesserView('laggy') ? LAG_MS * strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
@@ -352,7 +381,9 @@ pixelCv.width = W / 12; pixelCv.height = H / 12;
 function present() {
   if (!dirty && !(timed() && performance.now() - lastFade > 100)) return;
   paintPaper(ctx, strokes, renderOpts());
-  if (guesserView('pixel')) {
+  if (guesserView('pixel') && strength() > 0) {
+    const block = 1 + 11 * strength();
+    pixelCv.width = Math.round(W / block); pixelCv.height = Math.round(H / block);
     const pc = pixelCv.getContext('2d');
     pc.drawImage(board, 0, 0, pixelCv.width, pixelCv.height);
     ctx.save();
@@ -369,8 +400,8 @@ function drawLive(s, from) {
   else drawStroke(ctx, s, from, renderOpts());
 }
 
-let tool = 'pen', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null;
-const canDraw = () => !!S && !S.paused && (S.state === 'lobby' || (S.state === 'drawing' && S.drawerId === myId));
+let tool = 'pen', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null;
+const canDraw = () => !!S && ws?.readyState === 1 && !S.paused && (S.state === 'lobby' || (S.state === 'drawing' && S.drawerId === myId));
 const nid = () => Math.random().toString(36).slice(2, 10);
 const turnChaos = () => (S?.state === 'drawing' ? S.chaos : null);
 const shaky = () => is(turnChaos(), 'shaky');
@@ -389,6 +420,7 @@ function cancelLocal() {
   pending = [];
   cur = null;
   shape = null;
+  pointerId = null;
   drawFx();
 }
 function newStroke(t, rawPts) {
@@ -405,22 +437,25 @@ function flush() {
 function refuse() {
   const tw = turnChaos();
   if (is(tw, 'onestroke') && strokes.some((s) => s.by === myId)) return '➰ One stroke only — that was it!';
+  if (is(tw, 'fivestrokes') && S.budget?.strokesLeft === 0) return 'All five strokes used';
+  if (is(tw, 'inkbudget') && (S.budget?.inkLeft ?? INK_BUDGET) < size) return 'Ink limit reached';
   if (!allowedTool(tw, effectiveTool())) return 'That tool is off this turn';
   return null;
 }
 
 board.addEventListener('pointerdown', (e) => {
-  if (e.button > 0 || !canDraw()) return;
+  if (e.button > 0 || !canDraw() || pointerId !== null) return;
   const [x, y] = toXY(e);
   const why = refuse();
   if (why) return toast(why);
   e.preventDefault();
   board.setPointerCapture(e.pointerId);
+  pointerId = e.pointerId;
   const t = effectiveTool();
   if (t === 'fill') {
     const s = newStroke('fill', [x, y]);
     strokes.push(s); drawLive(s, 0); act('stroke', { s });
-    return;
+    pointerId = null; return;
   }
   if (t === 'line' || t === 'rect' || t === 'ellipse') { shape = newStroke(t, [x, y, x, y]); return; }
   cur = newStroke(t, [x, y]);
@@ -430,6 +465,7 @@ board.addEventListener('pointerdown', (e) => {
 });
 
 board.addEventListener('pointermove', (e) => {
+  if (pointerId !== null && e.pointerId !== pointerId) return;
   const [hx, hy] = toXY(e);
   hover = canDraw() || (S?.state === 'drawing' && S.drawerId === myId) ? [hx, hy] : null;
   if ((cur || shape) && !canDraw()) cancelLocal();
@@ -455,7 +491,8 @@ board.addEventListener('pointermove', (e) => {
   drawFx();
 });
 
-function endPointer() {
+function endPointer(e) {
+  if (e.pointerId !== pointerId) return;
   if (!canDraw()) { cancelLocal(); return; }
   // Incremental painting approximates the curve's tail; repaint it exactly.
   if (cur) { flush(); cur = null; markDirty(); }
@@ -470,9 +507,10 @@ function endPointer() {
     }
   }
   drawFx();
+  pointerId = null;
 }
 board.addEventListener('pointerup', endPointer);
-board.addEventListener('pointercancel', () => { flush(); cancelLocal(); });
+board.addEventListener('pointercancel', (e) => { if (e.pointerId === pointerId) { flush(); cancelLocal(); } });
 board.addEventListener('pointerleave', () => { hover = null; drawFx(); });
 
 function drawFx() {
@@ -510,6 +548,7 @@ const avatarEl = (p, cls = '') => h('span', { class: `avatar ${cls}`, style: `ba
 const inGame = () => ['choosing', 'drawing', 'reveal'].includes(S?.state);
 
 function render(prev) {
+  if (prev && prev.seq !== S.seq && $('#confirmModal').open) $('#confirmModal').close();
   const me = playerById(myId);
   const drawer = playerById(S.drawerId);
   const isDrawer = S.drawerId === myId;
@@ -526,7 +565,7 @@ function render(prev) {
     const old = prev?.players.find((q) => q.id === p.id);
     const kickBtn = S.hostId === myId && p.id !== myId && h('button', {
       class: 'kick', title: `Kick ${p.name}`, 'aria-label': `Kick ${p.name}`, text: '✕',
-      onclick: () => { if (confirm(`Kick ${p.name}?`)) send('kick', { id: p.id }); },
+      onclick: () => confirmAction(`Kick ${p.name}?`, 'Kick', () => send('kick', { id: p.id })),
     });
     return h('li', { class: `pl${p.id === myId ? ' me' : ''}${p.guessed ? ' guessed' : ''}${p.id === S.drawerId && inGame() ? ' drawing' : ''}${p.connected ? '' : ' off'}` },
       h('span', { class: 'rank', text: S.state === 'lobby' ? '' : `#${rank}` }),
@@ -550,11 +589,8 @@ function render(prev) {
 
   $('#boardWrap').classList.toggle('can-draw', canDraw());
   const tw = turnChaos();
-  $('#modChip').hidden = !tw;
-  if (tw) $('#modChip').textContent = `${tw.icon} ${tw.name}`;
-  if (tw) $('#modChip').title = tw.desc;
   $('#blind').hidden = !(is(tw, 'blind') && isDrawer);
-  for (const id of ['fog', 'quake', 'spin', 'negative']) $('#boardWrap').classList.toggle(`v-${id}`, guesserView(id));
+  renderChallenge();
   const pause = $('#pauseBanner');
   pause.hidden = !S.paused;
   if (S.paused) pause.textContent = `⏸️ ${S.paused.reason || 'Paused'}`;
@@ -581,6 +617,7 @@ function renderWord(isDrawer, drawer) {
     return fill(area, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
   }
   const hint = S.hint || '';
+  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, h('span', { class: 'big', text: '?' }));
   const slots = [...hint].map((ch) => {
     if (ch === ' ') return h('span', { class: 'slot gap' });
     if (ch === '_') return h('span', { class: 'slot' }, ' ');
@@ -596,7 +633,7 @@ function renderOverlay(isDrawer, drawer) {
   const ov = $('#overlay');
   const pill = $('#settingsPill');
   let key = `${S.state}|${S.seq}`;
-  if (S.state === 'choosing') key += `|${S.drawerId}|${isDrawer}|${S.rerolled}|${(S.choices || []).map((c) => c.word).join(',')}`;
+  if (S.state === 'choosing') key += `|${S.drawerId}|${isDrawer}|${S.rerolled}|${S.chaos?.id}|${S.guesserChaos?.id}|${S.canRescue}|${(S.choices || []).map((c) => c.word).join(',')}`;
   if (S.state === 'lobby') key += `|${lobbyMinimized}|${S.hostId === myId}`;
   const show = !(S.state === 'drawing' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
   ov.hidden = !show;
@@ -613,7 +650,30 @@ function renderOverlay(isDrawer, drawer) {
 }
 $('#settingsPill').onclick = () => { lobbyMinimized = false; render(S); };
 
-const chaosCard = (tw) => tw && h('div', { class: 'mod-card' }, h('b', { text: `${tw.icon} ${tw.name}` }), ` — ${tw.desc}`);
+const chaosCard = (tw) => tw && h('div', { class: `mod-card ${tw.target || 'artist'}` }, h('b', { text: tw.name }), h('span', { text: tw.desc }));
+
+function renderChallenge() {
+  const strip = $('#challenge');
+  const artist = S?.drawerId === myId;
+  const mode = S?.state === 'drawing' ? (artist ? S.chaos : S.guesserChaos) : null;
+  strip.hidden = !mode;
+  if (!mode) { strip.dataset.mode = ''; return; }
+  const key = `${S.seq}:${mode.id}`;
+  if (strip.dataset.mode !== key) {
+    strip.dataset.mode = key;
+    strip.className = `challenge ${artist ? 'artist' : 'guesser'}`;
+    fill(strip, h('div', {}, h('b', { text: mode.name }), h('span', { text: mode.desc })),
+      h('div', { class: 'budget', hidden: !S.budget },
+        h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })));
+  }
+  const label = $('#budgetText');
+  const meter = $('#inkMeter');
+  if (S.budget?.strokesLeft != null) { label.textContent = `${S.budget.strokesLeft} strokes left`; meter.hidden = true; }
+  if (S.budget?.inkLeft != null) {
+    label.textContent = `${Math.ceil(100 * S.budget.inkLeft / INK_BUDGET)}% ink`;
+    meter.hidden = false; meter.value = S.budget.inkLeft;
+  }
+}
 
 function buildChoosing(isDrawer, drawer) {
   if (isDrawer && S.choices) {
@@ -623,12 +683,14 @@ function buildChoosing(isDrawer, drawer) {
       h('div', { class: 'choices' }, S.choices.map((c, i) => h('button', { class: 'choice', onclick: () => act('choose', { i }) },
         h('span', { class: `diff ${c.diff}`, text: c.diff }),
         h('span', { class: 'w', text: c.word })))),
-      S.rerolled ? null : h('button', { class: 'btn ghost', text: '🔁 New words', onclick: () => act('reroll') }));
+      h('div', { class: 'choice-actions' },
+        S.rerolled ? null : h('button', { class: 'btn ghost', text: 'New words', onclick: () => act('reroll') }),
+        S.canRescue ? h('button', { class: 'btn', text: 'Swap challenge · 1 left', title: 'Once per match', onclick: () => act('rescue') }) : null));
   }
   return h('div', { class: 'ov-inner' },
     avatarEl(drawer, 'big-av'),
     h('h2', { text: `${drawer?.name || 'Someone'} is picking…` }),
-    chaosCard(S.chaos));
+    chaosCard(S.guesserChaos));
 }
 
 function buildReveal() {
@@ -638,6 +700,9 @@ function buildReveal() {
   return h('div', { class: 'ov-inner' },
     h('p', { text: reason }),
     h('div', { class: 'reveal-word', text: r.word || '' }),
+    h('div', { class: 'challenge-recap' },
+      r.artistChaos && h('span', { text: `Artist: ${r.artistChaos.name}` }),
+      r.guesserChaos && h('span', { text: `Guessers: ${r.guesserChaos.name}` })),
     scored.length ? h('ul', { class: 'deltas' }, scored.map((d) => {
       const p = playerById(d.id) || { name: d.name };
       return h('li', {}, avatarEl(p), h('span', { text: `${p.name || '?'}${d.drawer ? ' ✏️' : ''}` }), h('span', { class: 'p', text: `+${d.pts}` }));
@@ -650,18 +715,24 @@ const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
 const CHAOS_OPTS = { off: 'Off', some: 'Sometimes', always: 'Every turn' };
-const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos'];
+const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
+const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
 let wordsT = null;
 function readSettings() {
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
+  const preset = q('preset').value;
   const out = {
     rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
-    difficulty: q('difficulty').value, chaos: q('chaos').value, customOnly: q('customOnly').checked,
+    difficulty: q('difficulty').value, chaos: preset === 'classic' ? 'off' : q('chaos').value,
+    chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
   if (q('customWords')) out.customWords = q('customWords').value;
   return out;
 }
-const pushSettings = () => send('settings', { settings: readSettings() });
+const pushSettings = () => {
+  clearTimeout(wordsT); wordsT = null;
+  if (S?.state === 'lobby' && $('#overlay [name=preset]')) send('settings', { settings: readSettings() });
+};
 
 function buildLobby() {
   const host = S.hostId === myId;
@@ -671,21 +742,25 @@ function buildLobby() {
       h('button', { class: 'btn primary', text: `🔗 Invite friends · ${S.code}`, onclick: copyInvite }),
       h('button', { class: 'btn ghost', text: '✏️ Doodle', title: 'Hide settings and doodle while you wait', onclick: () => { lobbyMinimized = true; render(S); } })),
     h('div', { class: 'grid' },
+      h('label', { class: 'field mode-field' }, h('span', { text: 'Mode' }), h('select', { name: 'preset', onchange: (e) => {
+        if (e.target.value !== 'classic' && $('[name=chaos]').value === 'off') $('[name=chaos]').value = 'always';
+        pushSettings();
+      } }, Object.entries(PRESETS).map(([value, text]) => h('option', { value, text })))),
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
       h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
       h('label', { class: 'field' }, h('span', { text: 'Hints' }), select('hints', HINT_COUNTS, (v) => (v ? `${v} letter${v > 1 ? 's' : ''}` : 'None'))),
       h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), select('difficulty', Object.keys(DIFFICULTIES), (v) => DIFFICULTIES[v])),
-      h('label', { class: 'field' }, h('span', { text: '💥 Chaos' }), select('chaos', Object.keys(CHAOS_OPTS), (v) => CHAOS_OPTS[v]))),
+      h('label', { class: 'field', id: 'chaosFrequency' }, h('span', { text: 'Chaos turns' }), select('chaos', ['some', 'always'], (v) => CHAOS_OPTS[v]))),
     h('details', { class: 'custom chaos-list' },
-      h('summary', { text: `💥 ${CHAOS_MODES.length} chaos modes` }),
-      h('ul', {}, CHAOS_MODES.map((c) => h('li', { title: c.desc }, h('b', { text: `${c.icon} ${c.name}` }), h('small', { text: c.desc }))))),
+      h('summary', { text: 'Challenges' }),
+      h('ul', {}, CHAOS_MODES.map((c) => h('li', {}, h('b', { text: c.name }), h('small', { text: `${c.target === 'artist' ? 'Artist' : 'Guessers'}. ${c.desc}` }))))),
     h('details', { class: 'custom' },
       h('summary', { name: 'customSum' }),
       host ? h('textarea', { name: 'customWords', placeholder: 'inside jokes, friends’ names, comma separated…', maxLength: 6000,
         oninput: () => { clearTimeout(wordsT); wordsT = setTimeout(pushSettings, 500); } }) : null,
       h('label', { class: 'toggle' }, h('input', { type: 'checkbox', name: 'customOnly', onchange: pushSettings }), h('span', { text: 'Only use our words' }))),
-    host ? h('button', { class: 'btn go big', name: 'start', onclick: () => send('start') })
+    host ? h('button', { class: 'btn go big', name: 'start', onclick: () => { pushSettings(); send('start'); } })
       : h('p', { class: 'muted', text: 'Waiting for the host to start…' }));
 }
 
@@ -697,10 +772,12 @@ function syncLobby() {
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
   for (const k of SELECTS) {
     const sel = q(k);
-    if (![...sel.options].some((o) => o.value === String(s[k]))) sel.append(h('option', { value: String(s[k]), text: String(s[k]) }));
-    if (sel !== active) sel.value = String(s[k]);
+    const value = k === 'preset' ? (s.chaos === 'off' ? 'classic' : s.chaosPool) : k === 'chaos' && s.chaos === 'off' ? 'always' : s[k];
+    if (![...sel.options].some((o) => o.value === String(value))) sel.append(h('option', { value: String(value), text: String(value) }));
+    if (sel !== active) sel.value = String(value);
     sel.disabled = !host;
   }
+  $('#chaosFrequency').hidden = s.chaos === 'off';
   q('customOnly').checked = !!s.customOnly;
   q('customOnly').disabled = !host;
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;
@@ -742,8 +819,8 @@ function renderToolbar() {
       h('span', { class: 'tdiv' }),
       tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), locked),
       lobby ? (host ? tb('trash', 'Clear', false, () => act('clear')) : null)
-        : tb('trash', 'Clear canvas', false, () => { if (confirm('Clear the whole canvas?')) act('clear'); }, locked),
-      !lobby && !solved ? tb('skip', 'Skip this word', false, () => { if (confirm('Skip your turn?')) act('skip'); }) : null),
+        : tb('trash', 'Clear canvas', false, () => confirmAction('Clear the whole canvas?', 'Clear', () => act('clear')), locked),
+      !lobby && !solved ? tb('skip', 'Skip this word', false, () => confirmAction('Skip your turn?', 'Skip', () => act('skip'))) : null),
     h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
       class: `tbtn sz${effSize === sz ? ' on' : ''}`, 'aria-label': `Brush size ${sz}`, 'aria-pressed': String(effSize === sz),
       disabled: sizeLock != null, onclick: () => { size = sz; renderToolbar(); },
@@ -869,7 +946,7 @@ function renderEnd(fresh) {
         h('a', { href: url, download: `squiggle-${g.word.replace(/[^a-z0-9]+/gi, '-')}.png` }).click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
-      const by = `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.icon}` : ''}`;
+      const by = `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.name}` : ''}${g.guesserChaos ? ` · ${g.guesserChaos.name}` : ''}`;
       return h('figure', { class: 'gal' },
         h('button', { class: 'thumb-btn', 'aria-label': `Open drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
@@ -890,14 +967,39 @@ $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 // --- frame loop ----------------------------------------------------------------
 
 let lastSec = -1;
+let lastView = 0;
+const curtain = $('#curtain'), curtainCtx = curtain.getContext('2d');
+function paintGuesserView(now) {
+  if (now - lastView < 100) return;
+  lastView = now;
+  const amount = strength();
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const filters = [];
+  if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
+  if (guesserView('negative')) filters.push(`invert(${amount}) hue-rotate(${180 * amount}deg)`);
+  board.style.filter = filters.join(' ');
+  board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
+    ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
+    : guesserView('quake') && !reducedMotion && amount > 0
+      ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  curtain.hidden = !guesserView('curtain') || amount === 0;
+  if (!curtain.hidden) {
+    curtainCtx.clearRect(0, 0, W, H);
+    curtainCtx.fillStyle = '#ece3d0';
+    for (let i = 0; i < 10; i++) {
+      const width = W / 10, covered = width * amount / 2;
+      curtainCtx.fillRect(i * width, 0, covered, H);
+      curtainCtx.fillRect((i + 1) * width - covered, 0, covered, H);
+    }
+  }
+}
 function tick() {
   requestAnimationFrame(tick);
   if (!S) return;
   const now = performance.now();
+  paintGuesserView(now);
   if (inGame()) {
     const { left } = clientClock(S, stateRecvAt, now);
-    // Foggy Glasses: the blur clears as the turn runs down.
-    if (guesserView('fog')) $('#boardWrap').style.setProperty('--fog', `${(14 * (S.phaseLen ? left / S.phaseLen : 0)).toFixed(1)}px`);
     const sec = Math.ceil(left / 1000);
     $('#timer .prog').style.strokeDashoffset = String(119.4 * (1 - (S.phaseLen ? left / S.phaseLen : 0)));
     if (sec !== lastSec) {
