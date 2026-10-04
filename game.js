@@ -6,6 +6,7 @@ import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
   CHAOS_LEVELS, CHAOS_POOLS, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress,
+  stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
@@ -85,6 +86,9 @@ export class Room {
     this.lastGuesserChaosId = null;
     this.inkUsed = 0;
     this.strokeUsed = 0;
+    this.guessBudgets = new Map();
+    this.challengeTimer = null;
+    this.batchReleased = false;
     this.banned = new Set();
     this.reveal = null;
     this.endData = null;
@@ -110,9 +114,31 @@ export class Room {
 
   system(text, tone = 'info') { this.broadcast('chat', { kind: 'system', tone, text }); }
 
-  resetCanvas() {
+  resetCanvas(publish = true) {
     this.strokes = [];
     this.coordCount = 0;
+    if (publish) this.publishedStrokes = [];
+  }
+
+  batching() { return this.state === 'drawing' && is(this.guesserChaos, 'batches') && !this.batchReleased; }
+
+  canvasFor(p) { return this.batching() && p.id !== this.drawerId ? this.publishedStrokes : this.strokes; }
+
+  publishCanvas() {
+    // Freeze points too: an ongoing stroke must not mutate an already published batch.
+    this.publishedStrokes = this.strokes.map((s) => ({ ...s, pts: [...s.pts] }));
+    for (const p of this.players.values()) if (p.id !== this.drawerId) {
+      this.send(p, 'canvas', { seq: this.turnSeq, strokes: this.publishedStrokes });
+    }
+  }
+
+  broadcastDraw(t, data = {}, exceptId = null) {
+    const held = this.batching();
+    if (held && turnProgress(this.clockMs(), this.timeLeft()) >= 2 / 3) {
+      this.batchReleased = true;
+      this.publishCanvas();
+    }
+    for (const p of this.players.values()) if (p.id !== exceptId && (!held || p.id === this.drawerId)) this.send(p, t, data);
   }
 
   clockMs() {
@@ -160,6 +186,7 @@ export class Room {
       drawerId: this.drawerId,
       timeLeft: this.timeLeft(),
       phaseLen: this.phaseLen,
+      scoreLen: this.scoreLen,
       gameMs: this.clockMs(),
       seq: this.turnSeq,
       paused: this.pausedAt ? { reason: this.pauseReason, until: this.pauseUntil() } : null,
@@ -172,6 +199,7 @@ export class Room {
         : drawing ? { id: this.chaos.id, seed: this.chaos.seed } : null),
       guesserChaos: this.guesserChaos,
       budget: p.id === this.drawerId ? this.drawBudget() : null,
+      guessBudget: this.guessBudget(p),
       canRescue: this.state === 'choosing' && !this.pausedAt && !this.pastDeadline() && p.id === this.drawerId && !!this.chaos && !p.rescued,
       spectating: drawing && p.id !== this.drawerId && !this.turnEligible.includes(p.id),
       reveal: this.state === 'reveal' ? this.reveal : null,
@@ -196,6 +224,56 @@ export class Room {
     if (budget) this.send(p, 'draw-budget', { seq: this.turnSeq, budget });
   }
 
+  guessBudget(p) {
+    if (this.state !== 'drawing' || !is(this.guesserChaos, 'limited') || this.isSolver(p)) return null;
+    const elapsed = this.clockMs();
+    let b = this.guessBudgets.get(p.id);
+    if (!b) { b = { remaining: 3, refillAt: 4000, seen: new Set() }; this.guessBudgets.set(p.id, b); }
+    if (elapsed >= b.refillAt) {
+      const fills = Math.floor((elapsed - b.refillAt) / 4000) + 1;
+      b.remaining = Math.min(3, b.remaining + fills);
+      b.refillAt += fills * 4000;
+    }
+    return { remaining: b.remaining, nextIn: Math.max(0, b.refillAt - elapsed), unlimited: turnProgress(elapsed, this.timeLeft()) >= 2 / 3 };
+  }
+
+  sendGuessBudget(p) {
+    const budget = this.guessBudget(p);
+    if (budget) this.send(p, 'guess-budget', { seq: this.turnSeq, budget });
+  }
+
+  scheduleChallenges() {
+    clock.clear(this.challengeTimer);
+    this.challengeTimer = null;
+    if (this.state !== 'drawing' || this.pausedAt) return;
+    const batches = is(this.guesserChaos, 'batches'), limited = is(this.guesserChaos, 'limited');
+    if (!batches && !limited) return;
+    const elapsed = this.clockMs(), left = this.timeLeft();
+    if (turnProgress(elapsed, left) >= 2 / 3) {
+      if (batches && !this.batchReleased) { this.batchReleased = true; this.publishCanvas(); }
+      if (limited) for (const p of this.players.values()) this.sendGuessBudget(p);
+      return;
+    }
+    const reliefIn = Math.ceil((2 * left - elapsed) / 3);
+    let delay = reliefIn;
+    if (batches) delay = Math.min(delay, 2000 - elapsed % 2000);
+    if (limited) for (const p of this.players.values()) {
+      const b = this.guessBudget(p);
+      if (b && b.remaining < 3) delay = Math.min(delay, b.nextIn);
+    }
+    const seq = this.turnSeq;
+    this.challengeTimer = clock.set(() => {
+      this.challengeTimer = null;
+      if (this.state !== 'drawing' || this.turnSeq !== seq || this.pausedAt) return;
+      if (batches) {
+        if (turnProgress(this.clockMs(), this.timeLeft()) >= 2 / 3) this.batchReleased = true;
+        this.publishCanvas();
+      }
+      if (limited) for (const p of this.players.values()) this.sendGuessBudget(p);
+      this.scheduleChallenges();
+    }, Math.max(1, Math.ceil(delay)));
+  }
+
   rollChaos() {
     this.chaos = null;
     this.guesserChaos = null;
@@ -217,8 +295,10 @@ export class Room {
   clearTimeoutsOnly() {
     this.timers.forEach(clock.clear);
     clock.clear(this.phaseTimer);
+    clock.clear(this.challengeTimer);
     this.timers = [];
     this.phaseTimer = null;
+    this.challengeTimer = null;
   }
 
   clearTimers() {
@@ -295,6 +375,7 @@ export class Room {
       this.scheduleHints();
     }
     this.sync();
+    this.scheduleChallenges();
   }
 
   start(p) {
@@ -356,6 +437,7 @@ export class Room {
     this.lateSolved.clear();
     this.inkUsed = 0;
     this.strokeUsed = 0;
+    this.guessBudgets.clear();
     this.rollChaos();
     this.choices = this.pickWords(this.settings.wordChoices);
     this.phase(CHOOSE_MS, () => this.choose(Math.floor(Math.random() * this.choices.length)));
@@ -403,6 +485,8 @@ export class Room {
     this.resetCanvas();
     this.inkUsed = 0;
     this.strokeUsed = 0;
+    this.guessBudgets.clear();
+    this.batchReleased = false;
     this.word = c.word;
     this.diff = c.diff;
     this.choices = [];
@@ -438,27 +522,51 @@ export class Room {
   // Unsolved guess. Answers only count while live, for eligible guessers, and
   // are never shown to the room.
   guess(p, text, seq) {
+    const limited = is(this.guesserChaos, 'limited');
+    if (limited && (this.pausedAt || seq !== this.turnSeq || this.pastDeadline())) {
+      this.send(p, 'chat', { kind: 'system', tone: 'warn', text: this.pausedAt ? 'Paused. Your guess was kept.' : 'That turn has ended.' });
+      return false;
+    }
     if (matchesAnswer(text, this.word)) {
       if (this.pausedAt) return this.send(p, 'chat', { kind: 'system', tone: 'warn', text: 'Paused — guesses don’t count until the game resumes.' });
       if (seq !== this.turnSeq || this.pastDeadline()) return this.send(p, 'chat', { kind: 'system', tone: 'warn', text: 'Too late — that guess missed the turn.' });
       if (!this.turnEligible.includes(p.id)) {
         this.lateSolved.add(p.id);
         this.send(p, 'chat', { kind: 'system', tone: 'good', text: 'Correct! You joined mid-turn, so it doesn’t score — you can chat with the solvers now.' });
-        return this.send(p, 'state', this.snapshot(p));
+        this.send(p, 'state', this.snapshot(p));
+        return true;
       }
-      return this.correct(p);
+      this.correct(p);
+      return true;
     }
     if (this.spoils(text)) {
-      return this.send(p, 'chat', { kind: 'close', text: `“${text}” — just the word, please. Not shown to others.` });
+      this.send(p, 'chat', { kind: 'close', text: `“${text}” — just the word, please. Not shown to others.` });
+      return false;
     }
-    this.broadcast('chat', { kind: 'guess', from: p.id, text });
     const w = norm(this.word), g = norm(text);
     const tol = w.length >= 8 ? 2 : w.length >= 4 ? 1 : 0;
-    if (tol && (lev(g, w) <= tol || lev(canonKey(text), canonKey(this.word)) <= tol)) {
+    const close = tol && (lev(g, w) <= tol || lev(canonKey(text), canonKey(this.word)) <= tol);
+    if (limited) {
+      const budget = this.guessBudget(p), b = this.guessBudgets.get(p.id);
+      if (!budget.unlimited && !close && !b.seen.has(g)) {
+        if (b.remaining === 0) {
+          this.send(p, 'toast', { text: `Next attempt in ${Math.ceil(budget.nextIn / 1000)}s` });
+          this.sendGuessBudget(p);
+          return false;
+        }
+        b.remaining--;
+      }
+      b.seen.add(g);
+      this.sendGuessBudget(p);
+      this.scheduleChallenges();
+    }
+    this.broadcast('chat', { kind: 'guess', from: p.id, text });
+    if (close) {
       p.close++;
       this.send(p, 'chat', { kind: 'close', text: `“${text}” is sooo close!` });
       this.send(p, 'sfx', { s: 'close' });
     }
+    return true;
   }
 
   spoils(text) { return mentionsAnswer(text, this.word); }
@@ -482,6 +590,7 @@ export class Room {
       this.phaseLen = SPEEDUP_LEFT;
       this.armPhase();
       this.scheduleHints();
+      this.scheduleChallenges();
       this.system('⏩ 25 seconds left!', 'warn');
     }
     this.sync();
@@ -492,6 +601,7 @@ export class Room {
     if (!this.word) return this.nextTurn();
     const drawer = this.players.get(this.drawerId);
     this.beginPhase('reveal');
+    if (is(this.guesserChaos, 'batches')) { this.batchReleased = true; this.publishCanvas(); }
     this.awardDrawer();
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
     if (this.strokes.length) this.gallery.push({
@@ -598,7 +708,7 @@ export class Room {
     p.resyncT = clock.set(() => {
       p.resyncT = null;
       p.lastResync = clock.now();
-      this.send(p, 'canvas', { strokes: this.strokes, seq: this.turnSeq });
+      this.send(p, 'canvas', { strokes: this.canvasFor(p), seq: this.turnSeq });
     }, wait);
   }
 
@@ -700,12 +810,16 @@ const handlers = {
       }
     }
     let out = { id, by: p.id, tool: v.tool, color: v.color, size: v.size, pts, t: gm };
+    if (v.tool === 'stamp') { out.shape = v.shape; out.pts = stampBounds(pts, v.shape); out.size = 4; }
+    if (!lobby && is(room.chaos, 'forbidden')) out.forbidden = forbiddenZone(room.chaos.seed);
+    if (!lobby && is(room.chaos, 'shrinking')) out.size = shrinkingSize(gm, room.scoreLen);
+    if (!lobby && is(room.chaos, 'slippery')) out.pts = slipperyPts(pts);
     if (!lobby) out = applyChaos(out, room.chaos);
     room.coordCount += pts.length;
     room.strokes.push(out);
     room.strokeUsed++;
     room.inkUsed += cost;
-    room.broadcast('stroke', { s: out, seq: room.turnSeq });
+    room.broadcastDraw('stroke', { s: out, seq: room.turnSeq });
     room.sendBudget(p);
     if (clipped) room.rejectDraw(p, 'ink', id);
   },
@@ -718,6 +832,7 @@ const handlers = {
     if (!add) return room.rejectDraw(p, 'pts', id);
     if (s.pts.length + add.length > MAX_STROKE_PTS || room.coordCount + add.length > MAX_TURN_COORDS) return room.rejectDraw(p, 'budget', id);
     if (room.shaky()) add = jitterPts(id, add, s.pts.length / 2);
+    if (room.state === 'drawing' && is(room.chaos, 'slippery')) add = slipperyPts(add, s.pts.slice(-2));
     let clipped = false;
     if (is(room.chaos, 'inkbudget')) {
       if (room.inkUsed >= INK_BUDGET) return room.rejectDraw(p, 'ink', id);
@@ -726,7 +841,7 @@ const handlers = {
     }
     s.pts.push(...add);
     room.coordCount += add.length;
-    room.broadcast('pts', { id, pts: add, seq: room.turnSeq }, p.id);
+    room.broadcastDraw('pts', { id, pts: add, seq: room.turnSeq }, p.id);
     room.sendBudget(p);
     if (clipped) room.rejectDraw(p, 'ink', id);
   },
@@ -737,27 +852,34 @@ const handlers = {
     if (idx < 0) return;
     const [s] = room.strokes.splice(idx, 1);
     room.coordCount -= s.pts.length;
-    room.broadcast('undo', { id: s.id, seq: room.turnSeq });
+    room.broadcastDraw('undo', { id: s.id, seq: room.turnSeq });
   },
   clear(room, p, m) {
     const lobby = room.state === 'lobby';
     if (lobby ? p.id !== room.hostId : !canUndo(room.chaos)) return;
     if (!room.drawGate(p, m)) return;
-    room.resetCanvas();
-    room.broadcast('clear', { seq: room.turnSeq, strokes: [] });
+    room.resetCanvas(!room.batching());
+    room.broadcastDraw('clear', { seq: room.turnSeq, strokes: [] });
   },
 
   chat(room, p, m) {
+    const requestId = clean(m.requestId, 40);
+    const ack = (accepted) => { if (requestId) room.send(p, 'guess-result', { seq: m.seq, requestId, accepted }); };
     const text = clean(m.text, 120);
-    if (!text) return;
+    if (!text) return ack(false);
+    if (requestId && (room.state !== 'drawing' || room.pausedAt || m.seq !== room.turnSeq || room.pastDeadline())) {
+      room.send(p, 'toast', { text: room.pausedAt ? 'Paused. Your guess was kept.' : 'That turn has ended.' });
+      return ack(false);
+    }
     const now = clock.now();
     p.chatTimes = (p.chatTimes || []).filter((t) => now - t < 5000);
-    if (p.chatTimes.length >= 8) return room.send(p, 'toast', { text: 'Whoa, slow down 🐢' });
+    if (p.chatTimes.length >= 8) { room.send(p, 'toast', { text: 'Whoa, slow down 🐢' }); return ack(false); }
     p.chatTimes.push(now);
     if (room.state !== 'drawing' || !room.word) return room.broadcast('chat', { kind: 'guess', from: p.id, text });
-    if (!room.isSolver(p)) return room.guess(p, text, m.seq);
-    if (room.spoils(text)) return room.send(p, 'chat', { kind: 'system', tone: 'warn', text: 'Nice try — no spoilers! 🤐' });
+    if (!room.isSolver(p)) return ack(room.guess(p, text, m.seq) === true);
+    if (room.spoils(text)) { room.send(p, 'chat', { kind: 'system', tone: 'warn', text: 'Nice try — no spoilers! 🤐' }); return ack(false); }
     for (const q of room.players.values()) if (room.isSolver(q)) room.send(q, 'chat', { kind: 'solved', from: p.id, text });
+    ack(true);
   },
   react(room, p, m) {
     if (!REACTIONS.includes(m.e)) return;
@@ -805,7 +927,7 @@ function addPlayer(ws, room, { name, avatar, color, token }) {
   if (!room.players.get(room.hostId)?.connected) room.hostId = p.id;
   ws.data = { room: room.code, pid: p.id };
   room.send(p, 'welcome', { code: room.code, token: p.token, id: p.id });
-  room.send(p, 'canvas', { strokes: room.strokes, seq: room.turnSeq });
+  room.send(p, 'canvas', { strokes: room.canvasFor(p), seq: room.turnSeq });
   if (room.state === 'end') room.send(p, 'gallery', { gallery: room.gallery });
   room.broadcast('sfx', { s: 'join' }, p.id);
   room.updatePause();

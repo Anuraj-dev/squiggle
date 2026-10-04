@@ -25,7 +25,9 @@ Multiplayer draw-and-guess game (skribbl-style). Bun server, plain ES-module cli
 - Every phase change bumps `turnSeq`. State snapshots carry it as `seq`. Turn-bound client actions (`act()` in app.js) echo `seq`, and the server drops stale ones.
 - The server sends a turn's `clear` **before** the matching `state`. The client board follows its own `boardSeq` (`resetBoard` in app.js). Do not gate board resets on `S.seq`. That was the "next drawer sees the old drawing" bug.
 - `chaos` holds the artist challenge; `guesserChaos` holds the guesser challenge. Artist instructions stay private until reveal. Stroke effects run server-side (`applyChaos`); guesser view effects run client-side and clear for the final third.
-- Five Strokes and Ink Budget track consumption separately from the canvas. Undo and clear preserve consumption; each new turn resets it. Mystery Length withholds the entire hint until halfway and reschedules relief after pause or speedup.
+- Five Strokes and Ink Budget track consumption separately from the canvas. Undo and clear preserve consumption; each new turn resets it. Mystery Length withholds the entire hint until halfway and reschedules relief after pause or speedup. Limited Guesses replenishes on unpaused time; correct guesses, near typos and duplicates are free.
+- Ink in Batches freezes all canvas mutations for guessers until its next publication. Reconnect/resync use `canvasFor(p)`, never the unpublished board. Reveal and final-third relief flush the full drawing.
+- Stamps, shrinking size, slippery points and forbidden clipping metadata are validated or derived by the server. Shared helpers keep optimistic drawing consistent; `board.js` applies canonical effects to live, gallery and exports.
 - Scoring (`guesserPts`) counts whole seconds after a 15% grace window. There is no first-guesser bonus, so a 1 ms tie must never change points.
 
 ## Verification traps

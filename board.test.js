@@ -30,6 +30,7 @@ class FakeCtx {
   ellipse(x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   rect(x, y, w, h) { this.ops.push(['pt', ...this.pt(x, y)], ['pt', ...this.pt(x + w, y + h)]); }
   beginPath() {} stroke() {} fill() {} closePath() {}
+  clip(rule) { this.ops.push(['clip', rule]); }
   createLinearGradient() { return { addColorStop() {} }; }
   fillRect(x, y, w, h) {
     // Paint a solid black block (or the white clear) into the pixel buffer.
@@ -128,4 +129,26 @@ test('chaos stroke flags map to painted copies', () => {
   // Pancake squashes y into the middle half of the page.
   const [[, sy, , ty]] = views({ squish: true });
   expect([sy * 0 + ty, sy * H + ty]).toEqual([H / 4, (3 * H) / 4]);
+});
+
+test('forbidden zones clip canonical ink and survive thumbnail rendering', () => {
+  const s = { id: 'z', tool: 'line', pts: [0, 100, 999, 100], size: 4, color: '#000000', forbidden: { x: 100, y: 90, w: 200, h: 150 } };
+  const c = new FakeCtx(W, H);
+  drawStroke(c, s);
+  expect(c.ops).toEqual([['pt', 0, 0], ['pt', W, H], ['pt', 100, 90], ['pt', 300, 240], ['clip', 'evenodd'], ['pt', 0, 100], ['pt', 999, 100]]);
+  const thumb = new FakeCtx(280, 210);
+  paintThumb(thumb, 280, 210, [s]);
+  expect(thumb.ops[0][1].ctx.ops.some((o) => o[0] === 'clip' && o[1] === 'evenodd')).toBe(true);
+});
+
+test('stamps draw bounded vector paths, including directional arrow heads', () => {
+  for (const shape of ['circle', 'square', 'triangle', 'star', 'arrow']) {
+    const c = new FakeCtx(W, H);
+    drawStroke(c, { id: shape, tool: 'stamp', shape, pts: [100, 100, 200, 200], size: 4, color: '#000000' });
+    expect(pts(c).length).toBeGreaterThan(0);
+    for (const [x, y] of pts(c)) { expect(x).toBeGreaterThanOrEqual(100); expect(x).toBeLessThanOrEqual(200); expect(y).toBeGreaterThanOrEqual(100); expect(y).toBeLessThanOrEqual(200); }
+  }
+  const c = new FakeCtx(W, H);
+  drawStroke(c, { id: 'left', tool: 'stamp', shape: 'arrow', pts: [200, 200, 100, 100], size: 4, color: '#000000' });
+  expect(pts(c).slice(0, 2)).toEqual([[200, 200], [100, 100]]);
 });

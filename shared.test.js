@@ -4,8 +4,45 @@ import {
   validateStroke, strokeId, applyChaos, pickChaos,
   guesserPts, drawerPts, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
-  inkCost, trimInk, turnProgress, viewStrength,
+  inkCost, trimInk, turnProgress, viewStrength, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
 } from './public/shared.js';
+
+test('stamp shapes and bounds are validated without enabling stamps in ordinary turns', () => {
+  for (const shape of STAMP_SHAPES) {
+    const s = validateStroke({ id: 's', tool: 'stamp', shape, pts: [0, 0, 0, 0] });
+    expect(s.ok).toBe(true); expect(s.shape).toBe(shape);
+  }
+  expect(validateStroke({ id: 's', tool: 'stamp', shape: 'script', pts: [0, 0, 0, 0] }).ok).toBe(false);
+  expect(allowedTool(null, 'stamp')).toBe(false);
+  expect(allowedTool({ id: 'stamps' }, 'pen')).toBe(false);
+  expect(stampBounds([0, 0, 0, 0])).toEqual([0, 0, 80, 80]);
+  expect(stampBounds([999, 749, 999, 749])).toEqual([919, 669, 999, 749]);
+  expect(stampBounds([900, 700, 100, 100])).toEqual([900, 700, 660, 460]);
+  for (const shape of ['circle', 'square']) expect(stampBounds([100, 100, 220, 150], shape)).toEqual([100, 100, 220, 220]);
+});
+
+test('slippery paths are continuous across packet boundaries and stay close to the pointer', () => {
+  const raw = [10, 10, 12, 15, 500, 600, 520, 640, 550, 610];
+  const full = slipperyPts(raw), head = slipperyPts(raw.slice(0, 6));
+  expect([...head, ...slipperyPts(raw.slice(6), head.slice(-2))]).toEqual(full);
+  expect(full.slice(0, 2)).toEqual([10, 10]);
+  for (let i = 0; i < raw.length; i += 2) expect(Math.hypot(raw[i] - full[i], raw[i + 1] - full[i + 1])).toBeLessThanOrEqual(18.000001);
+  expect(full).not.toEqual(raw);
+});
+
+test('new artist restrictions and deterministic drawing parameters are bounded', () => {
+  for (const [id, allowed] of [['straight', ['line']], ['shrinking', ['pen']], ['slippery', ['pen', 'eraser']]]) {
+    for (const tool of ['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']) expect(allowedTool({ id }, tool)).toBe(allowed.includes(tool));
+  }
+  expect(allowedTool({ id: 'forbidden' }, 'fill')).toBe(false);
+  expect([shrinkingSize(0, 60000), shrinkingSize(30000, 60000), shrinkingSize(90000, 60000)]).toEqual([22, 13, 4]);
+  for (const seed of [0, 12, 10000, 0xffffffff]) {
+    const z = forbiddenZone(seed);
+    expect(z).toEqual(forbiddenZone(seed));
+    expect(z.x).toBeGreaterThan(0); expect(z.x + z.w).toBeLessThan(W);
+    expect(z.y).toBeGreaterThan(0); expect(z.y + z.h).toBeLessThan(H);
+  }
+});
 
 test('ellipse and fill coordinate contracts', () => {
   expect(validateStroke({ id: 'a', tool: 'ellipse', pts: [100, 100] }).ok).toBe(false);

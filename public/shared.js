@@ -11,7 +11,8 @@ export const MAX_GALLERY = 48;
 export const GALLERY_COORDS = 24000;
 export const LOBBY_GRACE = 20000, GAME_GRACE = 120000;
 export const SPEEDUP_LEFT = 25000;
-export const TOOLS = new Set(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse']);
+export const TOOLS = new Set(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']);
+export const STAMP_SHAPES = ['circle', 'triangle', 'square', 'arrow', 'star'];
 export const JITTER = 7;
 export const INK_BUDGET = 6000, STROKE_BUDGET = 5;
 
@@ -47,6 +48,15 @@ export const CHAOS_MODES = [
   { id: 'inkbudget', icon: '🖋️', name: 'Ink Budget', desc: "Erasing uses ink. Undo and clear don't refill it.", mild: true },
   { id: 'mystery', icon: '❓', name: 'Mystery Length', desc: 'Word length appears halfway through.', view: true, mild: true },
   { id: 'curtain', icon: '🎭', name: 'Curtain Reveal', desc: 'The drawing opens in strips.', view: true, mild: true },
+  { id: 'straight', icon: '📏', name: 'Straight Lines Only', desc: 'Draw with straight lines.' },
+  { id: 'forbidden', icon: '🚧', name: 'Forbidden Zone', desc: 'Ink cannot enter the marked area.' },
+  { id: 'shrinking', icon: '🪡', name: 'Shrinking Brush', desc: 'Your pen gets thinner as time passes.', mild: true },
+  { id: 'stamps', icon: '🔺', name: 'Stamp Artist', desc: 'Tap or drag to stamp a shape.' },
+  { id: 'slippery', icon: '🧊', name: 'Slippery Pen', desc: 'Your pen trails behind your hand.', mild: true },
+  { id: 'puzzle', icon: '🧩', name: 'Puzzle Board', desc: 'Tiles return to place as time passes.', view: true },
+  { id: 'spotlight', icon: '🔦', name: 'Moving Spotlight', desc: 'A moving window opens onto the drawing.', view: true },
+  { id: 'batches', icon: '📬', name: 'Ink in Batches', desc: 'The drawing updates every two seconds.', view: true, mild: true },
+  { id: 'limited', icon: '🎯', name: 'Limited Guesses', desc: 'Three attempts. One returns every four seconds. Typos are free.', view: true },
 ].map((mode) => ({ ...mode, target: mode.view || mode.id === 'nohints' ? 'guesser' : 'artist',
   mild: mode.mild || ['tiny', 'rainbow', 'onecolor', 'dotted'].includes(mode.id) }));
 export const CHAOS_LEVELS = ['off', 'some', 'always'];
@@ -65,6 +75,42 @@ export function turnProgress(elapsed, left) {
   return elapsed + left > 0 ? Math.min(1, Math.max(0, elapsed / (elapsed + left))) : 1;
 }
 export const viewStrength = (elapsed, left) => Math.max(0, 1 - turnProgress(elapsed, left) * 1.5);
+
+export function forbiddenZone(seed = 0) {
+  const n = seed >>> 0;
+  return { x: 100 + n % 601, y: 90 + (Math.imul(n, 31) >>> 0) % 421, w: 200, h: 150 };
+}
+export const shrinkingSize = (elapsed, scoreLen) => Math.round(22 - 18 * Math.min(1, Math.max(0, elapsed / (scoreLen || 1))));
+
+// Preserve drag direction for arrows, keep taps visible, and keep stamps on paper.
+export function stampBounds(pts, shape) {
+  let [x1, y1, x2, y2] = pts;
+  if (Math.hypot(x2 - x1, y2 - y1) < 2) {
+    x1 -= 40; y1 -= 40; x2 = x1 + 80; y2 = y1 + 80;
+  } else {
+    const equal = shape === 'circle' || shape === 'square';
+    const side = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+    x2 = x1 + (x2 < x1 ? -1 : 1) * Math.min(240, Math.max(30, equal ? side : Math.abs(x2 - x1)));
+    y2 = y1 + (y2 < y1 ? -1 : 1) * Math.min(240, Math.max(30, equal ? side : Math.abs(y2 - y1)));
+  }
+  const dx = Math.max(0, -Math.min(x1, x2)) - Math.max(0, Math.max(x1, x2) - (W - 1));
+  const dy = Math.max(0, -Math.min(y1, y2)) - Math.max(0, Math.max(y1, y2) - (H - 1));
+  return [x1 + dx, y1 + dy, x2 + dx, y2 + dy];
+}
+
+// Packet boundaries must not change the path: carry the last rendered point.
+export function slipperyPts(pts, previous) {
+  const out = [];
+  let last = previous;
+  for (let i = 0; i < pts.length; i += 2) {
+    const raw = pts.slice(i, i + 2);
+    let next = last ? raw.map((v, j) => last[j] + (v - last[j]) * 0.25) : raw;
+    const gap = Math.hypot(raw[0] - next[0], raw[1] - next[1]);
+    if (gap > 18) next = raw.map((v, j) => v + (next[j] - v) * 18 / gap);
+    out.push(...next); last = next;
+  }
+  return out;
+}
 
 export function inkCost(s, previous) {
   const p = s.pts;
@@ -189,6 +235,7 @@ const TOOL_SPEC = {
   line: { exact: 4 },
   rect: { exact: 4 },
   ellipse: { exact: 4 },
+  stamp: { exact: 4 },
 };
 
 export function strokeId(playerId, clientId) {
@@ -228,12 +275,19 @@ export function validateStroke(s) {
   if (!pts) return { ok: false, reason: 'pts' };
   const color = /^#[0-9a-f]{6}$/i.test(s.color) ? s.color.toLowerCase() : '#1d1b1a';
   const size = clamp(s.size, 1, 80, 6);
-  return { ok: true, tool, pts, color, size };
+  if (tool === 'stamp' && !STAMP_SHAPES.includes(s.shape)) return { ok: false, reason: 'shape' };
+  return { ok: true, tool, pts, color, size, ...(tool === 'stamp' ? { shape: s.shape } : {}) };
 }
 
 // Which drawing tools the artist may use under a chaos mode.
 export function allowedTool(chaos, tool) {
   if (!TOOLS.has(tool)) return false;
+  if (is(chaos, 'stamps')) return tool === 'stamp';
+  if (tool === 'stamp') return false;
+  if (is(chaos, 'straight')) return tool === 'line';
+  if (is(chaos, 'shrinking')) return tool === 'pen';
+  if (is(chaos, 'slippery')) return tool === 'pen' || tool === 'eraser';
+  if (is(chaos, 'forbidden')) return tool !== 'fill';
   if (is(chaos, 'onestroke')) return tool === 'pen';
   if (is(chaos, 'fivestrokes')) return tool === 'pen';
   if (is(chaos, 'inkbudget')) return tool !== 'fill';

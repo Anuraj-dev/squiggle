@@ -5,7 +5,7 @@ import { clock, onMessage, onClose, rooms } from './game.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS,
   guesserPts, drawerPts, jitterPts,
-  INK_BUDGET, STROKE_BUDGET,
+  INK_BUDGET, STROKE_BUDGET, forbiddenZone, slipperyPts,
 } from './public/shared.js';
 
 let now = 1e6, timers = [], tid = 0;
@@ -600,7 +600,7 @@ test('presets use separate pools; mixed chooses either role or a mild pair', () 
     expect(ctx.room.chaos).toBeNull(); expect(ctx.room.guesserChaos).not.toBeNull();
     rng.mockReturnValueOnce(0.1); ctx.room.rollChaos();
     expect(ctx.room.chaos.mild).toBe(true); expect(ctx.room.guesserChaos.mild).toBe(true);
-    expect(['mystery', 'curtain']).toContain(ctx.room.guesserChaos.id);
+    expect(['mystery', 'curtain', 'batches']).toContain(ctx.room.guesserChaos.id);
   } finally { rng.mockRestore(); }
 });
 
@@ -618,4 +618,129 @@ test('role cards keep artist instructions private and reveal both challenges aft
     expect(g.state().reveal.artistChaos.name).toBe('Five Strokes');
     expect(g.state().reveal.guesserChaos.name).toBe('Curtain Reveal');
   }
+});
+
+function startChallenges(n, artist, guesser, settings = {}) {
+  const ctx = setup(n, { hints: 0, ...settings });
+  ctx.ss[0].do('start');
+  ctx.room.chaos = artist ? tw(artist) : null;
+  ctx.room.guesserChaos = guesser ? tw(guesser) : null;
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  drawer.act('choose', { i: 0 });
+  return { ...ctx, drawer, guessers: ctx.ss.filter((s) => s !== drawer) };
+}
+
+test('straight lines, stamps and forbidden zones are enforced on authoritative strokes', () => {
+  const c = startChallenges(2, 'straight');
+  c.drawer.act('stroke', { s: pen('curve', [10, 10, 50, 80, 100, 10]) });
+  expect(c.room.strokes).toEqual([]);
+  c.drawer.act('stroke', { s: { ...pen('line', [10, 10, 100, 10]), tool: 'line' } });
+  expect(c.room.strokes[0].tool).toBe('line');
+  c.room.chaos = tw('stamps');
+  c.drawer.act('stroke', { s: { ...pen('stamp', [0, 0, 0, 0]), tool: 'stamp', shape: 'star', size: 80 } });
+  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'star', pts: [0, 0, 80, 80], size: 4 });
+  c.drawer.act('stroke', { s: { ...pen('bad', [0, 0, 0, 0]), tool: 'stamp', shape: 'unknown' } });
+  expect(c.room.strokes).toHaveLength(2);
+  c.room.chaos = tw('forbidden');
+  c.drawer.act('stroke', { s: { ...pen('zone', [0, 300, 999, 300]), forbidden: { x: 0, y: 0, w: 1000, h: 750 } } });
+  expect(c.room.strokes.at(-1).forbidden).toEqual(forbiddenZone(7));
+  c.drawer.act('stroke', { s: { ...pen('fill', [1, 1]), tool: 'fill' } });
+  expect(c.room.strokes).toHaveLength(3);
+});
+
+test('shrinking brush uses unpaused original turn time and slippery points follow packet tails', () => {
+  const c = startChallenges(2, 'shrinking');
+  c.drawer.act('stroke', { s: pen('thick', [10, 10]) });
+  expect(c.room.strokes[0].size).toBe(22);
+  advance(40000);
+  c.drawer.act('stroke', { s: pen('thin', [20, 20]) });
+  expect(c.room.strokes[1].size).toBe(13);
+  const g = c.guessers[0], token = g.out.find((m) => m.t === 'welcome').token;
+  g.drop(); advance(5000);
+  const back = sock('back'); back.do('join', { room: c.code, token });
+  c.drawer.act('stroke', { s: pen('same', [30, 30]) });
+  expect(c.room.strokes[2].size).toBe(13);
+  c.room.chaos = tw('slippery');
+  const raw = [10, 10, 20, 25, 400, 500, 500, 550];
+  c.drawer.act('stroke', { s: pen('slip', raw.slice(0, 4)) });
+  c.drawer.act('pts', { id: 'slip', pts: raw.slice(4) });
+  expect(c.room.strokes.at(-1).pts).toEqual(slipperyPts(raw));
+});
+
+test('batch publication freezes appended points, clear, and reconnect snapshots', () => {
+  const c = startChallenges(3, null, 'batches'), [a, b] = c.guessers;
+  const mark = a.mark();
+  c.drawer.act('stroke', { s: pen('one', [10, 10]) });
+  c.drawer.act('pts', { id: 'one', pts: [20, 20] });
+  expect(a.since(mark, 'stroke')).toEqual([]);
+  expect(a.since(mark, 'pts')).toEqual([]);
+  advance(1999); expect(c.room.publishedStrokes).toEqual([]);
+  advance(1); expect(a.since(mark, 'canvas').at(-1).strokes[0].pts).toEqual([10, 10, 20, 20]);
+  c.drawer.act('pts', { id: 'one', pts: [30, 30] });
+  expect(c.room.publishedStrokes[0].pts).toEqual([10, 10, 20, 20]);
+  const token = b.out.find((m) => m.t === 'welcome').token;
+  b.drop(); const back = sock('back'); back.do('join', { room: c.code, token });
+  expect(back.out.findLast((m) => m.t === 'canvas').strokes[0].pts).toEqual([10, 10, 20, 20]);
+  const i = a.mark(); c.drawer.act('clear');
+  expect(c.room.strokes).toEqual([]); expect(c.room.publishedStrokes).toHaveLength(1);
+  expect(a.since(i, 'clear')).toEqual([]);
+  advance(2000); expect(a.since(i, 'canvas').at(-1).strokes).toEqual([]);
+});
+
+test('batch timers freeze during pause and release after speedup and at reveal', () => {
+  const c = startChallenges(2, null, 'batches'), g = c.guessers[0];
+  c.drawer.act('stroke', { s: pen('one', [10, 10]) }); advance(1000);
+  const token = g.out.find((m) => m.t === 'welcome').token;
+  g.drop(); advance(5000); expect(c.room.publishedStrokes).toEqual([]);
+  const back = sock('back'); back.do('join', { room: c.code, token });
+  advance(999); expect(c.room.publishedStrokes).toEqual([]);
+  advance(1); expect(c.room.publishedStrokes).toHaveLength(1);
+  c.drawer.act('pts', { id: 'one', pts: [30, 30] }); c.drawer.act('skip');
+  expect(back.out.findLast((m) => m.t === 'canvas').strokes[0].pts).toEqual([10, 10, 30, 30]);
+  const d = startChallenges(3, null, 'batches'), [a, b] = d.guessers;
+  advance(10001); a.act('chat', { text: d.room.word });
+  advance(13332); expect(d.room.batchReleased).toBe(false);
+  advance(1); expect(d.room.batchReleased).toBe(true);
+  const i = b.mark(); d.drawer.act('stroke', { s: pen('live', [5, 5]) });
+  expect(b.since(i, 'stroke')).toHaveLength(1);
+});
+
+test('limited attempts charge distinct wrong answers but allow typos, repeats and correct answers at zero', () => {
+  const c = startChallenges(3, null, 'limited'), [a, b] = c.guessers;
+  for (const text of ['zzz', 'yyy', 'xxx']) a.act('chat', { text, requestId: text });
+  expect(c.room.guessBudget(c.room.players.get(a.id)).remaining).toBe(0);
+  const mark = b.mark(); a.act('chat', { text: 'www', requestId: 'rejected' });
+  expect(b.chats(mark)).toEqual([]);
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', requestId: 'rejected', accepted: false });
+  a.act('chat', { text: 'zzz', requestId: 'duplicate' });
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: true });
+  a.act('chat', { text: c.room.word.slice(0, -1), requestId: 'typo' });
+  expect(c.room.guessBudget(c.room.players.get(a.id)).remaining).toBe(0);
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: true });
+  const seq = c.room.turnSeq; a.act('chat', { text: c.room.word, requestId: 'right' });
+  expect(c.room.guessed.has(a.id)).toBe(true);
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', seq, requestId: 'right', accepted: true });
+});
+
+test('limited attempt replenishment and relief share unpaused time and reject stale guesses', () => {
+  const c = startChallenges(2, null, 'limited'), g = c.guessers[0], p = c.room.players.get(g.id);
+  g.act('chat', { text: 'zzz', requestId: 'one' });
+  advance(3999); expect(c.room.guessBudget(p).remaining).toBe(2);
+  advance(1); expect(g.out.findLast((m) => m.t === 'guess-budget').budget.remaining).toBe(3);
+  g.act('chat', { text: 'yyy', requestId: 'two' });
+  const seq = c.room.turnSeq, mark = c.drawer.mark();
+  g.do('chat', { seq: seq - 1, text: 'xxx', requestId: 'stale' });
+  expect(g.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: false });
+  expect(c.room.guessBudget(p).remaining).toBe(2); expect(c.drawer.chats(mark)).toEqual([]);
+  const token = c.drawer.out.find((m) => m.t === 'welcome').token;
+  c.drawer.drop(); advance(10000);
+  g.act('chat', { text: 'qqq', requestId: 'paused' });
+  expect(c.room.guessBudget(p).remaining).toBe(2);
+  const back = sock('back'); back.do('join', { room: c.code, token });
+  advance(3999); expect(c.room.guessBudget(p).remaining).toBe(2);
+  advance(1); expect(c.room.guessBudget(p).remaining).toBe(3);
+  advance(45334); expect(c.room.guessBudget(p).unlimited).toBe(true);
+  for (const text of ['abc', 'def', 'ghi', 'jkl']) g.act('chat', { text, requestId: text });
+  expect(g.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: true });
+  expect(c.room.guessBudget(p).remaining).toBe(3);
 });

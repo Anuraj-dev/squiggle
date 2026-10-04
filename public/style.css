@@ -191,6 +191,10 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .budget meter { width: 90px; height: 16px; accent-color: #6840aa; }
 .choice-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
 .challenge-recap { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem 1rem; font-size: 0.85rem; }
+.reveal-recap { background: #fff5d9; }
+.reveal-summary { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.4rem 1rem; width: 100%; }
+.reveal-summary p { margin: 0; }
+.reveal-scores { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; font-size: 0.85rem; }
 .lobby .mode-field { grid-column: 1 / -1; }
 .settings-pill { position: absolute; top: 10px; left: 10px; z-index: 3; }
 .settings-pill, .overlay .btn { font-size: 0.95rem; }

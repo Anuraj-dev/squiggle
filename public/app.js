@@ -1,6 +1,6 @@
 // Squiggle client: one module, no build step.
 import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
-  INK_BUDGET, viewStrength } from './shared.js';
+  INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { createMusic } from './music.js';
 
@@ -33,6 +33,11 @@ const PALETTE = ['#1d1b1a', '#8a847c', '#ffffff', '#e8322a', '#ff7a2f', '#ffc93c
 const SIZES = [4, 10, 22, 44];
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
 const ICONS = {
+  circle: '<circle cx="12" cy="12" r="8"/>',
+  triangle: '<path d="M12 4L21 20H3Z"/>',
+  square: '<rect x="4" y="4" width="16" height="16"/>',
+  arrow: '<path d="M3 9H14V4L22 12L14 20V15H3Z"/>',
+  star: '<path d="M12 2L15 8L22 9L17 14L18 21L12 18L6 21L7 14L2 9L9 8Z"/>',
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>',
   eraser: '<path d="M8 20h12"/><path d="M4 15l9-9 6 6-7 7H8z"/><path d="M9 10l6 6"/>',
   fill: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c0 2 1 3 1 4a1.5 1.5 0 01-3 0c0-1 1-2 2-4z"/>',
@@ -181,6 +186,8 @@ function confetti(n = 60) {
 
 let ws = null, S = null, myId = null, roomCode = null, leaving = false, retry = 0, gallery = [], pingT = null;
 let stateRecvAt = 0;
+let guessBudgetAt = 0;
+const pendingGuesses = new Map();
 
 function send(t, data = {}) { if (ws?.readyState === 1) ws.send(JSON.stringify({ t, ...data })); }
 // Turn-bound actions carry the phase token so the server can drop stale ones.
@@ -274,6 +281,7 @@ function resetBoard(m) {
 function onMsg(m) {
   switch (m.t) {
     case 'welcome':
+      pendingGuesses.clear();
       roomCode = m.code; myId = m.id;
       tokens[m.code] = m.token; store.set('sq-tokens', tokens);
       history.replaceState(null, '', `?r=${m.code}`);
@@ -286,6 +294,7 @@ function onMsg(m) {
       const prev = S;
       S = m;
       stateRecvAt = performance.now();
+      guessBudgetAt = stateRecvAt;
       if (prev && (prev.state !== m.state || prev.seq !== m.seq || prev.drawerId !== m.drawerId || !!prev.paused !== !!m.paused)) cancelLocal();
       if (prev && (prev.state !== m.state || prev.seq !== m.seq)) markDirty();
       render(prev);
@@ -325,6 +334,15 @@ function onMsg(m) {
     case 'draw-budget':
       if (S && sameTurn(m)) { S.budget = m.budget; renderChallenge(); }
       break;
+    case 'guess-budget':
+      if (S && m.seq === S.seq) { S.guessBudget = m.budget; guessBudgetAt = performance.now(); renderChallenge(); }
+      break;
+    case 'guess-result': {
+      const draft = pendingGuesses.get(m.requestId);
+      pendingGuesses.delete(m.requestId);
+      if (draft && m.accepted && draft.seq === m.seq && draft.room === roomCode && draft.player === myId && $('#chatIn').value === draft.text) $('#chatIn').value = '';
+      break;
+    }
     case 'chat': addMsg(m); break;
     case 'react': floatReaction(m); break;
     case 'sfx': play(m.s); if (m.s === 'correct') confetti(40); break;
@@ -367,7 +385,7 @@ const strength = () => {
 };
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || guesserView('laggy') || guesserView('pixel');
+const timed = () => fading() || guesserView('laggy') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
   chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
@@ -377,10 +395,31 @@ const markDirty = () => { dirty = true; };
 
 const pixelCv = document.createElement('canvas');
 pixelCv.width = W / 12; pixelCv.height = H / 12;
+const puzzlePaper = Object.assign(document.createElement('canvas'), { width: W, height: H });
+const puzzleCtx = puzzlePaper.getContext('2d');
+const TILE_ORDERS = [[1,0,3,2], [1,2,3,0], [1,3,0,2], [2,0,3,1], [2,3,0,1], [2,3,1,0], [3,0,1,2], [3,2,0,1], [3,2,1,0]];
+function puzzleOrder() {
+  const order = [...TILE_ORDERS[(S.guesserChaos.seed >>> 0) % TILE_ORDERS.length]];
+  const clock = clientClock(S, stateRecvAt, performance.now());
+  const steps = Math.floor(turnProgress(clock.gameMs, clock.left) * 4.5);
+  for (let step = 0; step < steps; step++) {
+    const slot = order.findIndex((tile, i) => tile !== i);
+    if (slot < 0) break;
+    const other = order.indexOf(slot);
+    [order[slot], order[other]] = [order[other], order[slot]];
+  }
+  return order;
+}
 // Repaints the board when something changed; timed modes repaint ~10×/s.
 function present() {
   if (!dirty && !(timed() && performance.now() - lastFade > 100)) return;
-  paintPaper(ctx, strokes, renderOpts());
+  if (guesserView('puzzle')) {
+    paintPaper(puzzleCtx, strokes, renderOpts());
+    for (const [slot, tile] of puzzleOrder().entries()) {
+      ctx.drawImage(puzzlePaper, tile % 2 * W / 2, Math.floor(tile / 2) * H / 2, W / 2, H / 2,
+        slot % 2 * W / 2, Math.floor(slot / 2) * H / 2, W / 2, H / 2);
+    }
+  } else paintPaper(ctx, strokes, renderOpts());
   if (guesserView('pixel') && strength() > 0) {
     const block = 1 + 11 * strength();
     pixelCv.width = Math.round(W / block); pixelCv.height = Math.round(H / block);
@@ -400,13 +439,15 @@ function drawLive(s, from) {
   else drawStroke(ctx, s, from, renderOpts());
 }
 
-let tool = 'pen', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null;
+let tool = 'pen', stampShape = 'circle', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null, rawLast = null;
 const canDraw = () => !!S && ws?.readyState === 1 && !S.paused && (S.state === 'lobby' || (S.state === 'drawing' && S.drawerId === myId));
 const nid = () => Math.random().toString(36).slice(2, 10);
 const turnChaos = () => (S?.state === 'drawing' ? S.chaos : null);
 const shaky = () => is(turnChaos(), 'shaky');
-const TOOL_ORDER = ['pen', 'line', 'rect', 'ellipse', 'fill', 'eraser'];
+const TOOL_ORDER = ['pen', 'line', 'rect', 'ellipse', 'fill', 'eraser', 'stamp'];
 const effectiveTool = () => (allowedTool(turnChaos(), tool) ? tool : TOOL_ORDER.find((t) => allowedTool(turnChaos(), t)));
+const brushSize = () => liveChaos('shrinking') ? shrinkingSize(gameMs(), S.scoreLen || S.settings.drawTime * 1000)
+  : liveChaos('tiny') ? 3 : liveChaos('giant') ? 44 : size;
 
 function toXY(e) {
   const r = board.getBoundingClientRect();
@@ -421,14 +462,18 @@ function cancelLocal() {
   cur = null;
   shape = null;
   pointerId = null;
+  rawLast = null;
   drawFx();
 }
 function newStroke(t, rawPts) {
-  const s = { id: `${myId}:${nid()}`, by: myId, tool: t, pts: rawPts, color, size, t: gameMs() };
+  const s = { id: `${myId}:${nid()}`, by: myId, tool: t, pts: rawPts, color, size: brushSize(), t: gameMs() };
+  if (t === 'stamp') { s.shape = stampShape; s.size = 4; }
+  if (liveChaos('forbidden')) s.forbidden = forbiddenZone(S.chaos.seed);
   return S?.state === 'drawing' ? applyChaos(s, S.chaos) : s;
 }
 // What the server will store for these raw points (shaky jitter is applied by index).
-const shown = (s, rawPts, from = 0) => (shaky() && s.tool !== 'fill' ? jitterPts(s.id, rawPts, from) : rawPts);
+const shown = (s, rawPts, from = 0, previous) => liveChaos('slippery') ? slipperyPts(rawPts, previous)
+  : shaky() && s.tool !== 'fill' ? jitterPts(s.id, rawPts, from) : rawPts;
 function flush() {
   clearTimeout(flushT); flushT = null;
   if (cur && pending.length) act('pts', { id: cur.id, pts: pending });
@@ -457,8 +502,9 @@ board.addEventListener('pointerdown', (e) => {
     strokes.push(s); drawLive(s, 0); act('stroke', { s });
     pointerId = null; return;
   }
-  if (t === 'line' || t === 'rect' || t === 'ellipse') { shape = newStroke(t, [x, y, x, y]); return; }
+  if (t === 'line' || t === 'rect' || t === 'ellipse' || t === 'stamp') { shape = newStroke(t, [x, y, x, y]); return; }
   cur = newStroke(t, [x, y]);
+  rawLast = [x, y];
   act('stroke', { s: { ...cur } });
   cur.pts = shown(cur, [x, y]);
   strokes.push(cur); drawLive(cur, 0);
@@ -472,7 +518,7 @@ board.addEventListener('pointermove', (e) => {
   if (cur) {
     const from = cur.pts.length / 2;
     const raw = [];
-    let [lx, ly] = cur.pts.slice(-2);
+    let [lx, ly] = rawLast || cur.pts.slice(-2);
     for (const ev of e.getCoalescedEvents?.() || [e]) {
       const [px, py] = toXY(ev);
       if (Math.abs(px - lx) + Math.abs(py - ly) < 2) continue;
@@ -480,7 +526,8 @@ board.addEventListener('pointermove', (e) => {
       [lx, ly] = [px, py];
     }
     if (raw.length) {
-      cur.pts.push(...shown(cur, raw, from));
+      rawLast = [lx, ly];
+      cur.pts.push(...shown(cur, raw, from, cur.pts.slice(-2)));
       pending.push(...raw);
       drawLive(cur, from);
       if (!flushT) flushT = setTimeout(flush, 40);
@@ -500,9 +547,9 @@ function endPointer(e) {
     const s = shape;
     shape = null;
     const [x1, y1, x2, y2] = s.pts;
-    if (Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
+    if (s.tool === 'stamp' || Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
       act('stroke', { s });
-      s.pts = shown(s, s.pts);
+      s.pts = s.tool === 'stamp' ? stampBounds(s.pts, s.shape) : shown(s, s.pts);
       strokes.push(s); drawLive(s, 0);
     }
   }
@@ -515,14 +562,30 @@ board.addEventListener('pointerleave', () => { hover = null; drawFx(); });
 
 function drawFx() {
   fxc.clearRect(0, 0, W, H);
-  if (!S || S.paused) return;
+  if (!S) return;
+  if (guesserView('spotlight') && strength() > 0) {
+    const amount = strength(), seed = (S.guesserChaos.seed >>> 0) % 628 / 100;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const x = W / 2 + (reduced ? 0 : Math.sin(gameMs() / 4000 + seed) * 280);
+    const y = H / 2 + (reduced ? 0 : Math.cos(gameMs() / 5500 + seed) * 190);
+    const farthest = Math.hypot(Math.max(x, W - x), Math.max(y, H - y));
+    fxc.save(); fxc.fillStyle = '#ece3d0'; fxc.fillRect(0, 0, W, H);
+    fxc.globalCompositeOperation = 'destination-out';
+    fxc.beginPath(); fxc.arc(x, y, 260 + (farthest - 260) * (1 - amount), 0, Math.PI * 2); fxc.fill(); fxc.restore();
+  }
+  if (liveChaos('forbidden') && S.drawerId === myId) {
+    const zone = forbiddenZone(S.chaos.seed);
+    fxc.save(); fxc.strokeStyle = '#6840aa'; fxc.lineWidth = 3; fxc.setLineDash([10, 7]);
+    fxc.strokeRect(zone.x, zone.y, zone.w, zone.h); fxc.restore();
+  }
+  if (S.paused) return;
   // Preview what will land, including jitter.
-  if (shape) drawStroke(fxc, { ...shape, pts: shown(shape, shape.pts) });
+  if (shape) drawStroke(fxc, { ...shape, pts: shape.tool === 'stamp' ? stampBounds(shape.pts, shape.shape) : shown(shape, shape.pts) });
   if (hover && canDraw() && effectiveTool() !== 'fill') {
     fxc.save();
     fxc.lineWidth = 1.5;
     fxc.strokeStyle = 'rgba(29,27,26,.6)';
-    const r = is(turnChaos(), 'tiny') ? 3 : is(turnChaos(), 'giant') ? 44 : size;
+    const r = brushSize();
     fxc.beginPath(); fxc.arc(hover[0], hover[1], Math.max(r / 2, 2), 0, Math.PI * 2); fxc.stroke();
     fxc.restore();
   }
@@ -635,7 +698,7 @@ function renderOverlay(isDrawer, drawer) {
   let key = `${S.state}|${S.seq}`;
   if (S.state === 'choosing') key += `|${S.drawerId}|${isDrawer}|${S.rerolled}|${S.chaos?.id}|${S.guesserChaos?.id}|${S.canRescue}|${(S.choices || []).map((c) => c.word).join(',')}`;
   if (S.state === 'lobby') key += `|${lobbyMinimized}|${S.hostId === myId}`;
-  const show = !(S.state === 'drawing' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
+  const show = !(S.state === 'drawing' || S.state === 'reveal' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
   ov.hidden = !show;
   $('#boardWrap').classList.toggle('expand', show);
   pill.hidden = !(S.state === 'lobby' && lobbyMinimized);
@@ -644,7 +707,6 @@ function renderOverlay(isDrawer, drawer) {
     overlayKey = key;
     if (S.state === 'lobby') fill(ov, buildLobby());
     else if (S.state === 'choosing') fill(ov, buildChoosing(isDrawer, drawer));
-    else if (S.state === 'reveal') fill(ov, buildReveal());
   }
   if (S.state === 'lobby') syncLobby();
 }
@@ -654,6 +716,15 @@ const chaosCard = (tw) => tw && h('div', { class: `mod-card ${tw.target || 'arti
 
 function renderChallenge() {
   const strip = $('#challenge');
+  if (S?.state === 'reveal') {
+    const key = `${S.seq}:reveal`;
+    strip.hidden = false;
+    if (strip.dataset.mode !== key) {
+      strip.dataset.mode = key; strip.className = 'challenge reveal-recap';
+      fill(strip, buildReveal());
+    }
+    return;
+  }
   const artist = S?.drawerId === myId;
   const mode = S?.state === 'drawing' ? (artist ? S.chaos : S.guesserChaos) : null;
   strip.hidden = !mode;
@@ -663,11 +734,19 @@ function renderChallenge() {
     strip.dataset.mode = key;
     strip.className = `challenge ${artist ? 'artist' : 'guesser'}`;
     fill(strip, h('div', {}, h('b', { text: mode.name }), h('span', { text: mode.desc })),
-      h('div', { class: 'budget', hidden: !S.budget },
+      h('div', { class: 'budget', hidden: !S.budget && !S.guessBudget && mode.id !== 'shrinking' },
         h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })));
   }
   const label = $('#budgetText');
   const meter = $('#inkMeter');
+  label.parentElement.hidden = !S.budget && !S.guessBudget && mode.id !== 'shrinking';
+  if (mode.id === 'shrinking') { label.textContent = `Brush ${brushSize()}`; meter.hidden = true; }
+  if (S.guessBudget) {
+    const b = S.guessBudget, dt = S.paused ? 0 : Math.max(0, performance.now() - guessBudgetAt);
+    label.textContent = b.unlimited || strength() === 0 ? 'Unlimited guesses'
+      : `${b.remaining} attempt${b.remaining === 1 ? '' : 's'}${b.remaining < 3 ? ` · next in ${Math.max(0, Math.ceil((b.nextIn - dt) / 1000))}s` : ''}`;
+    meter.hidden = true;
+  }
   if (S.budget?.strokesLeft != null) { label.textContent = `${S.budget.strokesLeft} strokes left`; meter.hidden = true; }
   if (S.budget?.inkLeft != null) {
     label.textContent = `${Math.ceil(100 * S.budget.inkLeft / INK_BUDGET)}% ink`;
@@ -697,15 +776,14 @@ function buildReveal() {
   const r = S.reveal || {};
   const reason = { all: '🎉 Everybody got it!', time: '⏰ Time’s up!', left: '🏃 The artist left', skip: '⏭️ Skipped' }[r.reason] || '';
   const scored = (r.deltas || []).filter((d) => d.pts > 0).sort((a, b) => b.pts - a.pts);
-  return h('div', { class: 'ov-inner' },
+  return h('div', { class: 'reveal-summary' },
     h('p', { text: reason }),
-    h('div', { class: 'reveal-word', text: r.word || '' }),
     h('div', { class: 'challenge-recap' },
       r.artistChaos && h('span', { text: `Artist: ${r.artistChaos.name}` }),
       r.guesserChaos && h('span', { text: `Guessers: ${r.guesserChaos.name}` })),
-    scored.length ? h('ul', { class: 'deltas' }, scored.map((d) => {
+    scored.length ? h('div', { class: 'reveal-scores' }, scored.map((d) => {
       const p = playerById(d.id) || { name: d.name };
-      return h('li', {}, avatarEl(p), h('span', { text: `${p.name || '?'}${d.drawer ? ' ✏️' : ''}` }), h('span', { class: 'p', text: `+${d.pts}` }));
+      return h('span', { text: `${p.name || '?'} +${d.pts}` });
     })) : h('p', { text: 'Nobody got it 😬' }));
 }
 
@@ -806,7 +884,7 @@ function renderToolbar() {
   const locked = !lobby && !canUndo(tw);
   const solved = S.players.some((p) => p.guessed);
   const host = S.hostId === myId;
-  const key = JSON.stringify([active, size, color, S.seq, S.state, host, solved, tw?.id]);
+  const key = JSON.stringify([active, stampShape, size, color, S.seq, S.state, host, solved, tw?.id]);
   if (key === toolbarKey) return;
   toolbarKey = key;
   const tb = (name, label, on, onclick, disabled) => h('button', {
@@ -815,13 +893,15 @@ function renderToolbar() {
   const tools = [['pen', 'Pen (B)'], ['eraser', 'Eraser (E)'], ['fill', 'Fill (F)'], ['line', 'Line (L)'], ['rect', 'Rectangle (R)'], ['ellipse', 'Ellipse (O)']];
   const effSize = sizeLock ?? size;
   fill(bar,
-    h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Tools' }, tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
+    h('div', { class: 'tgroup', role: 'group', 'aria-label': is(tw, 'stamps') ? 'Stamps' : 'Tools' },
+      is(tw, 'stamps') ? STAMP_SHAPES.map((s) => tb(s, `${s[0].toUpperCase() + s.slice(1)} stamp`, stampShape === s, () => { tool = 'stamp'; stampShape = s; renderToolbar(); }))
+        : tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
       h('span', { class: 'tdiv' }),
       tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), locked),
       lobby ? (host ? tb('trash', 'Clear', false, () => act('clear')) : null)
         : tb('trash', 'Clear canvas', false, () => confirmAction('Clear the whole canvas?', 'Clear', () => act('clear')), locked),
       !lobby && !solved ? tb('skip', 'Skip this word', false, () => confirmAction('Skip your turn?', 'Skip', () => act('skip'))) : null),
-    h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
+    is(tw, 'stamps') || is(tw, 'shrinking') ? null : h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
       class: `tbtn sz${effSize === sz ? ' on' : ''}`, 'aria-label': `Brush size ${sz}`, 'aria-pressed': String(effSize === sz),
       disabled: sizeLock != null, onclick: () => { size = sz; renderToolbar(); },
     }, h('span', { class: 'size-dot', style: `width:${Math.max(4, sz * 0.5)}px;height:${Math.max(4, sz * 0.5)}px` })))),
@@ -870,6 +950,14 @@ $('#chatForm').onsubmit = (e) => {
   const input = $('#chatIn');
   const text = input.value.trim();
   if (!text) return;
+  if (ws?.readyState !== 1) { toast('Reconnecting. Your message was kept.'); return; }
+  if (S?.state === 'drawing' && is(S.guesserChaos, 'limited') && !S.word) {
+    const requestId = nid();
+    if (pendingGuesses.size >= 32) pendingGuesses.delete(pendingGuesses.keys().next().value);
+    pendingGuesses.set(requestId, { text: input.value, seq: S.seq, room: roomCode, player: myId });
+    act('chat', { text, requestId });
+    return;
+  }
   act('chat', { text });
   input.value = '';
 };
@@ -992,6 +1080,7 @@ function paintGuesserView(now) {
       curtainCtx.fillRect((i + 1) * width - covered, 0, covered, H);
     }
   }
+  if (guesserView('spotlight') || liveChaos('forbidden') || liveChaos('shrinking')) drawFx();
 }
 function tick() {
   requestAnimationFrame(tick);
@@ -1003,6 +1092,7 @@ function tick() {
     const sec = Math.ceil(left / 1000);
     $('#timer .prog').style.strokeDashoffset = String(119.4 * (1 - (S.phaseLen ? left / S.phaseLen : 0)));
     if (sec !== lastSec) {
+      if (S.guessBudget || liveChaos('shrinking')) renderChallenge();
       $('#timerTxt').textContent = String(sec);
       const urgent = S.state === 'drawing' && sec <= 10 && !S.paused;
       $('#timer').classList.toggle('urgent', urgent);
