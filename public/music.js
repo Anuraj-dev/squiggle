@@ -30,9 +30,11 @@ const hz = (midi) => 440 * 2 ** ((midi - 69) / 12);
 
 export function createMusic(getCtx) {
   let ac = null, out = null, bus = null, timer = null;
-  let playing = false, volume = 0.5, index = 0;
+  let playing = false, volume = 0.5, index = 0, muted = false;
   let r = Math.random, nextBar = 0, bar = 0, motif = null, deg = 9;
   const listeners = new Set();
+  // Mute silences the output but keeps the volume setting and the music running.
+  const level = () => (muted ? 0 : volume * 0.6);
   const emit = () => listeners.forEach((fn) => fn(api.state()));
 
   // Long, soft stereo reverb built from decaying noise.
@@ -51,7 +53,7 @@ export function createMusic(getCtx) {
     ac = getCtx();
     if (!ac) return false;
     out = ac.createGain();
-    out.gain.value = volume * 0.6;
+    out.gain.value = level();
     const comp = ac.createDynamicsCompressor();
     out.connect(comp).connect(ac.destination);
     return true;
@@ -209,11 +211,16 @@ export function createMusic(getCtx) {
     },
     setVolume(v) {
       volume = Math.max(0, Math.min(1, v));
-      if (out) out.gain.setTargetAtTime(volume * 0.6, ac.currentTime, 0.05);
+      if (out) out.gain.setTargetAtTime(level(), ac.currentTime, 0.05);
+      emit();
+    },
+    setMuted(m) {
+      muted = !!m;
+      if (out) out.gain.setTargetAtTime(level(), ac.currentTime, 0.05);
       emit();
     },
     setTrack(i) { index = ((i % TRACKS.length) + TRACKS.length) % TRACKS.length; },
-    state: () => ({ playing, volume, index, name: TRACKS[index].name }),
+    state: () => ({ playing, volume, index, muted, name: TRACKS[index].name }),
     subscribe(fn) { listeners.add(fn); fn(api.state()); return () => listeners.delete(fn); },
   };
   return api;

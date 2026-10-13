@@ -144,17 +144,21 @@ $('#sfxIn').onchange = (e) => { muted = !e.target.checked; store.set('sq-muted',
 
 // Background music: on by default, starts with the first click (browsers
 // block audio before that). Preferences persist per browser.
-const musicPrefs = { on: true, volume: 0.5, track: 0, ...store.get('sq-music', {}) };
+const musicPrefs = { on: true, volume: 0.5, track: 0, muted: false, ...store.get('sq-music', {}) };
 const music = createMusic(() => { unlockAudio(); return ac; });
 music.setVolume(musicPrefs.volume);
 music.setTrack(musicPrefs.track);
+music.setMuted(musicPrefs.muted);
 music.subscribe((m) => {
   $('#trackName').textContent = m.name;
   $('#musicPlay').textContent = m.playing ? '⏸' : '▶';
   $('#musicPlay').setAttribute('aria-label', m.playing ? 'Pause music' : 'Play music');
-  $('#musicBtn').classList.toggle('on', m.playing);
+  $('#musicBtn').classList.toggle('on', m.playing && !m.muted);
+  $('#musicBtn').textContent = m.muted ? '🔇' : '🎵';
+  $('#musicIn').checked = !m.muted;
   $('#musicVol').value = String(Math.round(m.volume * 100));
-  store.set('sq-music', { on: musicPrefs.on, volume: m.volume, track: m.index });
+  musicPrefs.muted = m.muted;
+  store.set('sq-music', { on: musicPrefs.on, volume: m.volume, track: m.index, muted: m.muted });
 });
 addEventListener('pointerdown', () => { if (musicPrefs.on) music.play(); }, { once: true });
 const setPanel = (open) => { $('#musicPanel').hidden = !open; $('#musicBtn').setAttribute('aria-expanded', String(open)); };
@@ -162,6 +166,7 @@ $('#musicBtn').onclick = () => setPanel($('#musicPanel').hidden);
 addEventListener('pointerdown', (e) => { if (!e.target.closest('.music')) setPanel(false); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
 $('#musicPlay').onclick = () => { music.toggle(); musicPrefs.on = music.state().playing; store.set('sq-music', { ...musicPrefs, volume: music.state().volume, track: music.state().index }); };
+$('#musicIn').onchange = (e) => music.setMuted(!e.target.checked);
 $('#trackPrev').onclick = () => music.skip(-1);
 $('#trackNext').onclick = () => music.skip(1);
 $('#musicVol').oninput = (e) => music.setVolume(+e.target.value / 100);
