@@ -2,9 +2,47 @@ import { expect, test } from 'bun:test';
 import {
   W, H, GALLERY_COORDS, CHAOS_MODES,
   validateStroke, strokeId, applyChaos, pickChaos,
-  guesserPts, drawerPts, timeFrac, tiedRanking, podiumGroups,
+  guesserPts, drawerPts, allBonus, scoreMult, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
+  inkCost, trimInk, turnProgress, viewStrength, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
 } from './public/shared.js';
+
+test('stamp shapes and bounds are validated without enabling stamps in ordinary turns', () => {
+  for (const shape of STAMP_SHAPES) {
+    const s = validateStroke({ id: 's', tool: 'stamp', shape, pts: [0, 0, 0, 0] });
+    expect(s.ok).toBe(true); expect(s.shape).toBe(shape);
+  }
+  expect(validateStroke({ id: 's', tool: 'stamp', shape: 'script', pts: [0, 0, 0, 0] }).ok).toBe(false);
+  expect(allowedTool(null, 'stamp')).toBe(false);
+  expect(allowedTool({ id: 'stamps' }, 'pen')).toBe(false);
+  expect(stampBounds([0, 0, 0, 0])).toEqual([0, 0, 80, 80]);
+  expect(stampBounds([999, 749, 999, 749])).toEqual([919, 669, 999, 749]);
+  expect(stampBounds([900, 700, 100, 100])).toEqual([900, 700, 660, 460]);
+  for (const shape of ['circle', 'square']) expect(stampBounds([100, 100, 220, 150], shape)).toEqual([100, 100, 220, 220]);
+});
+
+test('slippery paths are continuous across packet boundaries and stay close to the pointer', () => {
+  const raw = [10, 10, 12, 15, 500, 600, 520, 640, 550, 610];
+  const full = slipperyPts(raw), head = slipperyPts(raw.slice(0, 6));
+  expect([...head, ...slipperyPts(raw.slice(6), head.slice(-2))]).toEqual(full);
+  expect(full.slice(0, 2)).toEqual([10, 10]);
+  for (let i = 0; i < raw.length; i += 2) expect(Math.hypot(raw[i] - full[i], raw[i + 1] - full[i + 1])).toBeLessThanOrEqual(18.000001);
+  expect(full).not.toEqual(raw);
+});
+
+test('new artist restrictions and deterministic drawing parameters are bounded', () => {
+  for (const [id, allowed] of [['straight', ['line']], ['shrinking', ['pen']], ['slippery', ['pen', 'eraser']]]) {
+    for (const tool of ['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']) expect(allowedTool({ id }, tool)).toBe(allowed.includes(tool));
+  }
+  expect(allowedTool({ id: 'forbidden' }, 'fill')).toBe(false);
+  expect([shrinkingSize(0, 60000), shrinkingSize(30000, 60000), shrinkingSize(90000, 60000)]).toEqual([22, 13, 4]);
+  for (const seed of [0, 12, 10000, 0xffffffff]) {
+    const z = forbiddenZone(seed);
+    expect(z).toEqual(forbiddenZone(seed));
+    expect(z.x).toBeGreaterThan(0); expect(z.x + z.w).toBeLessThan(W);
+    expect(z.y).toBeGreaterThan(0); expect(z.y + z.h).toBeLessThan(H);
+  }
+});
 
 test('ellipse and fill coordinate contracts', () => {
   expect(validateStroke({ id: 'a', tool: 'ellipse', pts: [100, 100] }).ok).toBe(false);
@@ -17,6 +55,39 @@ test('ellipse and fill coordinate contracts', () => {
   expect(validateStroke({ tool: 'pen', pts: [1, 2] }).ok).toBe(false);
   expect(validateStroke({ id: 'a', tool: 'pen', pts: [1e9, -1e9] }).pts).toEqual([W - 1, 0]);
   expect(validateStroke({ id: 'a', tool: 'fill', pts: [-3, H + 9] }).pts).toEqual([0, H - 1]);
+});
+
+test('ink measures geometry and clips a freehand segment at the remaining distance', () => {
+  expect(inkCost({ tool: 'pen', size: 6, pts: [0, 0, 3, 4] })).toBe(11);
+  expect(inkCost({ tool: 'pen', size: 6, pts: [3, 4] }, [0, 0])).toBe(5);
+  expect(inkCost({ tool: 'rect', size: 6, pts: [10, 10, 110, 60] })).toBe(300);
+  expect(inkCost({ tool: 'ellipse', size: 6, pts: [0, 0, 100, 100] })).toBeCloseTo(Math.PI * 100);
+  expect(trimInk([3, 4, 6, 8], 7, [0, 0])).toEqual({ pts: [3, 4, 4.2, 5.6], cost: 7, clipped: true });
+  expect(trimInk([10, 10, 13, 14], 5)).toEqual({ pts: [10, 10, 13, 14], cost: 5, clipped: false });
+  expect(trimInk([3, 4], 0, [0, 0])).toEqual({ pts: [], cost: 0, clipped: true });
+  expect(allowedTool({ id: 'inkbudget' }, 'fill')).toBe(false);
+  expect(allowedTool({ id: 'inkbudget' }, 'eraser')).toBe(true);
+  expect(allowedTool({ id: 'fivestrokes' }, 'line')).toBe(false);
+});
+
+test('guesser views stay full to 40% of the turn, fade out, and are gone by 85%', () => {
+  expect(turnProgress(0, 80000)).toBe(0);
+  expect(turnProgress(40000, 40000)).toBe(0.5);
+  expect(turnProgress(10000, 25000)).toBeCloseTo(2 / 7);
+  expect(viewStrength(0, 80000)).toBe(1);
+  // Full strength through 40%; odd-ms boundary on the fade's start.
+  expect(viewStrength(32000, 48000)).toBe(1);
+  expect(viewStrength(32001, 47999)).toBeLessThan(1);
+  expect(viewStrength(32001, 47999)).toBeGreaterThan(0.99);
+  // Linear from 40% (1) to 85% (0).
+  expect(viewStrength(40000, 40000)).toBeCloseTo(7 / 9);
+  expect(viewStrength(50000, 30000)).toBeCloseTo(0.5);
+  // Odd-ms boundary on RELIEF_AT: total 80001 ms, 85% is 68000.85 ms.
+  expect(viewStrength(68000, 12001)).toBeGreaterThan(0);
+  expect(viewStrength(68001, 12000)).toBe(0);
+  expect(viewStrength(68000, 12000)).toBe(0);
+  expect(viewStrength(80000, 0)).toBe(0);
+  expect(viewStrength(0, 0)).toBe(0);
 });
 
 test('stroke ids are owner-prefixed and stable', () => {
@@ -35,12 +106,48 @@ test('rainbow ink does not mark erasers', () => {
   expect(eraser.color).toBe('#ff0000');
 });
 
-test('chaos pays a bonus; speedrun pays most; no chaos pays base', () => {
+test('each active chaos mode adds 25%; speedrun adds another 25%; no chaos pays base', () => {
   const at = (chaos) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos, streak: 1 });
   expect(at(null)).toBe(300);
-  expect(at({ id: 'mirror' })).toBe(360);
-  expect(at({ id: 'speed' })).toBe(450);
-  expect(guesserPts({ elapsed: 80000, scoreLen: 80000, diff: 'easy', chaos: null, streak: 3 })).toBe(120 + 30);
+  expect(at([])).toBe(300);
+  expect(at([{ id: 'mirror' }])).toBe(375);
+  expect(at([{ id: 'speed' }])).toBe(469); // 300 * 1.5625
+  expect(guesserPts({ elapsed: 80000, scoreLen: 80000, diff: 'easy', chaos: null, streak: 3 })).toBe(100 + 40);
+});
+
+test('two chaos modes multiply more than one; a single mode or null is accepted', () => {
+  const one = [{ id: 'mirror' }];
+  const two = [{ id: 'mirror' }, { id: 'fade' }];
+  expect(scoreMult('easy', two)).toBeGreaterThan(scoreMult('easy', one));
+  expect(scoreMult('easy', two)).toBe(1.5);
+  expect(scoreMult('easy', { id: 'mirror' })).toBe(1.25);
+  expect(scoreMult('easy', null)).toBe(1);
+  expect(scoreMult('easy', [null, { id: 'speed' }])).toBe(1.25 * 1.25);
+  const pts = (chaos) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos, streak: 1 });
+  expect(pts(two)).toBe(450);
+  expect(pts(two)).toBeGreaterThan(pts(one));
+});
+
+test('harder words pay more for both roles', () => {
+  const g = (diff) => guesserPts({ elapsed: 0, scoreLen: 80000, diff, chaos: null, streak: 1 });
+  const d = (diff) => drawerPts({ solved: 1, eligible: 2, diff, chaos: null, all: false });
+  expect(g('medium')).toBeGreaterThan(g('easy'));
+  expect(g('hard')).toBeGreaterThan(g('medium'));
+  expect(g('hard')).toBe(660); // 300 * 2.2
+  expect(d('hard')).toBeGreaterThan(d('easy'));
+  expect(d('hard')).toBe(220);
+  expect(allBonus('hard', null)).toBeGreaterThan(allBonus('easy', null));
+  expect(allBonus('easy', null)).toBe(100);
+  expect(allBonus('hard', null)).toBe(220);
+});
+
+test('streak adds 20 per step, capped at 5 steps', () => {
+  const at = (streak) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos: null, streak });
+  expect(at(1)).toBe(300);
+  expect(at(2)).toBe(320);
+  expect(at(6)).toBe(400);
+  expect(at(7)).toBe(400);
+  expect(at(12)).toBe(400);
 });
 
 test('scoring is forgiving: grace window, whole seconds, no first-guess cliff', () => {
@@ -50,8 +157,8 @@ test('scoring is forgiving: grace window, whole seconds, no first-guess cliff', 
   // A millisecond apart never changes points.
   for (const t of [12500, 30001, 47500, 79000]) expect(pts(t + 1)).toBe(pts(t));
   // Each later second costs only a few points, and the floor stays high.
-  expect(pts(30000) - pts(31000)).toBeLessThanOrEqual(4);
-  expect(pts(80000)).toBe(Math.round(120 * 1.3));
+  expect(pts(30000) - pts(31000)).toBeLessThanOrEqual(5);
+  expect(pts(80000)).toBe(Math.round(100 * 1.5));
   expect(timeFrac(46000, 80000)).toBeCloseTo(1 - 34000 / 68000);
 });
 
@@ -78,10 +185,25 @@ test('pickChaos never repeats the previous chaos', () => {
 });
 
 test('drawer score is a fraction of eligible guessers', () => {
-  expect(drawerPts({ solved: 1, eligible: 1, diff: 'easy', chaos: null })).toBe(180);
-  expect(drawerPts({ solved: 1, eligible: 8, diff: 'easy', chaos: null })).toBe(23);
+  expect(drawerPts({ solved: 1, eligible: 1, diff: 'easy', chaos: null })).toBe(200);
+  expect(drawerPts({ solved: 1, eligible: 8, diff: 'easy', chaos: null })).toBe(25);
   expect(drawerPts({ solved: 0, eligible: 3, diff: 'easy', chaos: null })).toBe(0);
   expect(drawerPts({ solved: 0, eligible: 0, diff: 'easy', chaos: null })).toBe(0);
+});
+
+test('drawer all-guessed bonus follows the all flag', () => {
+  const d = (solved, eligible, all) => drawerPts({ solved, eligible, diff: 'easy', chaos: null, all });
+  expect(d(2, 2, true)).toBe(300);
+  expect(d(2, 2, false)).toBe(200);
+  // The only unsolved guesser left: everyone still here got it, so the bonus applies.
+  expect(d(2, 3, true)).toBe(233);
+  expect(d(1, 1, true) - d(1, 1, false)).toBe(100);
+});
+
+test('a 1 ms difference inside one second never changes points', () => {
+  const pts = (elapsed) => guesserPts({ elapsed, scoreLen: 80000, diff: 'hard', chaos: [{ id: 'mirror' }], streak: 1 });
+  expect(pts(41000)).toBe(pts(41001));
+  expect(pts(41000)).toBe(pts(41999));
 });
 
 test('tied ranking: shared places, everyone on the results exactly once', () => {

@@ -104,6 +104,11 @@ export function drawStroke(c, s, from = 0, opts = {}) {
     } else {
       // Compose onto the current transform rather than replacing it.
       c.transform(sx, 0, 0, sy, tx, ty);
+      if (s.forbidden) {
+        const { x, y, w, h } = s.forbidden;
+        c.beginPath(); c.rect(0, 0, W, H); c.rect(x, y, w, h);
+        c.clip('evenodd');
+      }
       paint(c, s, from);
     }
     c.restore();
@@ -139,6 +144,29 @@ function paint(c, s, from) {
   const erasing = s.tool === 'eraser';
   const base = erasing ? '#ffffff' : s.color;
   const rainbow = !!(s.rainbow && !erasing);
+  if (s.tool === 'stamp') {
+    const [x1, y1, x2, y2] = p, x = Math.min(x1, x2), y = Math.min(y1, y2);
+    const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1), cx = x + w / 2, cy = y + h / 2;
+    c.strokeStyle = base; c.beginPath();
+    if (s.shape === 'circle') c.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
+    else if (s.shape === 'square') c.rect(x, y, w, h);
+    else if (s.shape === 'triangle') {
+      c.moveTo(cx, y); c.lineTo(x + w, y + h); c.lineTo(x, y + h); c.closePath();
+    } else if (s.shape === 'star') {
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 0.42 : 1;
+        const point = [cx + Math.cos(a) * w / 2 * r, cy + Math.sin(a) * h / 2 * r];
+        if (i === 0) c.moveTo(...point); else c.lineTo(...point);
+      }
+      c.closePath();
+    } else if (s.shape === 'arrow') {
+      const a = Math.atan2(y2 - y1, x2 - x1), len = Math.min(w, h) * 0.4;
+      c.moveTo(x1, y1); c.lineTo(x2, y2);
+      c.moveTo(x2 - Math.cos(a - Math.PI / 6) * len, y2 - Math.sin(a - Math.PI / 6) * len);
+      c.lineTo(x2, y2); c.lineTo(x2 - Math.cos(a + Math.PI / 6) * len, y2 - Math.sin(a + Math.PI / 6) * len);
+    }
+    c.stroke(); return;
+  }
   if (s.tool === 'line' || s.tool === 'rect' || s.tool === 'ellipse') {
     const [x1, y1, x2, y2] = p;
     if (rainbow) {

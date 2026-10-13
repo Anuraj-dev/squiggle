@@ -3,7 +3,9 @@
 A multiplayer drawing and guessing game for friends. Create a room, share the invite link, and take turns drawing words while everyone else guesses in real time.
 
 - Over 3,000 drawable words in three difficulties
-- 26 optional chaos modes, such as Mirror, Kaleidoscope, Earthquake and Laggy Stream
+- 39 optional challenges for artists and guessers, including stamps, puzzle tiles and replenishing guess attempts
+- Classic, Artist Chaos, Guesser Chaos and Mixed Chaos presets
+- One artist challenge swap per player per match, with a challenge recap after each turn
 - The host picks rounds, draw time, word choices, hints, difficulty and how often chaos happens
 - Calm procedural background music with player controls
 

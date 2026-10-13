@@ -1,5 +1,7 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES } from './shared.js';
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
+  INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
+  scoreMult, DIFF_MULT } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { createMusic } from './music.js';
 
@@ -32,6 +34,11 @@ const PALETTE = ['#1d1b1a', '#8a847c', '#ffffff', '#e8322a', '#ff7a2f', '#ffc93c
 const SIZES = [4, 10, 22, 44];
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
 const ICONS = {
+  circle: '<circle cx="12" cy="12" r="8"/>',
+  triangle: '<path d="M12 4L21 20H3Z"/>',
+  square: '<rect x="4" y="4" width="16" height="16"/>',
+  arrow: '<path d="M3 9H14V4L22 12L14 20V15H3Z"/>',
+  star: '<path d="M12 2L15 8L22 9L17 14L18 21L12 18L6 21L7 14L2 9L9 8Z"/>',
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>',
   eraser: '<path d="M8 20h12"/><path d="M4 15l9-9 6 6-7 7H8z"/><path d="M9 10l6 6"/>',
   fill: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c0 2 1 3 1 4a1.5 1.5 0 01-3 0c0-1 1-2 2-4z"/>',
@@ -127,6 +134,7 @@ const SFX = {
   tick: () => tone(1600, 0, 0.03, 'square', 0.03),
   reveal: () => { tone(520, 0, 0.18, 'triangle'); tone(390, 0.16, 0.3, 'triangle'); },
   allgot: () => [523, 659, 784, 659, 1047].forEach((f, i) => tone(f, i * 0.08, 0.14, 'triangle', 0.12)),
+  chaos: () => { tone(180, 0, 0.35, 'sawtooth', 0.06, 720); [988, 740, 1175].forEach((f, i) => tone(f, 0.3 + i * 0.07, 0.1, 'square', 0.05)); },
   end: () => [392, 523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, i * 0.12, 0.2, 'square', 0.06)),
   pop: () => tone(700, 0, 0.06, 'sine', 0.05, 1200),
 };
@@ -180,6 +188,8 @@ function confetti(n = 60) {
 
 let ws = null, S = null, myId = null, roomCode = null, leaving = false, retry = 0, gallery = [], pingT = null;
 let stateRecvAt = 0;
+let guessBudgetAt = 0;
+const pendingGuesses = new Map();
 
 function send(t, data = {}) { if (ws?.readyState === 1) ws.send(JSON.stringify({ t, ...data })); }
 // Turn-bound actions carry the phase token so the server can drop stale ones.
@@ -216,18 +226,38 @@ function goHome(err) {
   cancelLocal();
   overlayKey = ''; toolbarKey = ''; lobbyMinimized = false;
   closeDialogs();
+  if ($('#confirmModal').open) $('#confirmModal').close();
   $('#game').hidden = true;
   $('#home').hidden = false;
   $('#homeErr').textContent = err || '';
   document.title = 'Squiggle — draw badly, guess wildly';
 }
 
-$('#leaveBtn').onclick = () => {
-  if (S && S.state !== 'lobby' && S.state !== 'end' && !confirm('Leave this game?')) return;
+function confirmAction(title, action, accept) {
+  const modal = $('#confirmModal');
+  if (modal.open) return;
+  const room = roomCode, seq = S?.seq, player = myId, opener = document.activeElement;
+  $('#confirmTitle').textContent = title;
+  $('#confirmAccept').textContent = action;
+  modal.returnValue = '';
+  modal.addEventListener('close', () => {
+    // A delayed confirmation must never act in a different room or phase.
+    if (modal.returnValue === 'accept' && S && roomCode === room && myId === player && S.seq === seq) accept();
+    if (opener?.isConnected && !opener.closest('[hidden]')) opener.focus();
+    else (S ? $('#leaveBtn') : $('#createBtn')).focus();
+  }, { once: true });
+  modal.showModal();
+}
+
+function leaveRoom() {
   send('leave');
   delete tokens[roomCode]; store.set('sq-tokens', tokens);
   history.replaceState(null, '', location.pathname);
   goHome();
+}
+$('#leaveBtn').onclick = () => {
+  if (S && S.state !== 'lobby' && S.state !== 'end') confirmAction('Leave this game?', 'Leave', leaveRoom);
+  else leaveRoom();
 };
 
 const inviteLink = () => `${location.origin}${location.pathname}?r=${roomCode}`;
@@ -253,6 +283,7 @@ function resetBoard(m) {
 function onMsg(m) {
   switch (m.t) {
     case 'welcome':
+      pendingGuesses.clear();
       roomCode = m.code; myId = m.id;
       tokens[m.code] = m.token; store.set('sq-tokens', tokens);
       history.replaceState(null, '', `?r=${m.code}`);
@@ -265,6 +296,7 @@ function onMsg(m) {
       const prev = S;
       S = m;
       stateRecvAt = performance.now();
+      guessBudgetAt = stateRecvAt;
       if (prev && (prev.state !== m.state || prev.seq !== m.seq || prev.drawerId !== m.drawerId || !!prev.paused !== !!m.paused)) cancelLocal();
       if (prev && (prev.state !== m.state || prev.seq !== m.seq)) markDirty();
       render(prev);
@@ -301,6 +333,18 @@ function onMsg(m) {
       toast(rejectText(m.reason));
       if (!m.id || cur?.id === m.id || shape?.id === m.id) cancelLocal();
       break;
+    case 'draw-budget':
+      if (S && sameTurn(m)) { S.budget = m.budget; renderChallenge(); }
+      break;
+    case 'guess-budget':
+      if (S && m.seq === S.seq) { S.guessBudget = m.budget; guessBudgetAt = performance.now(); renderChallenge(); }
+      break;
+    case 'guess-result': {
+      const draft = pendingGuesses.get(m.requestId);
+      pendingGuesses.delete(m.requestId);
+      if (draft && m.accepted && draft.seq === m.seq && draft.room === roomCode && draft.player === myId && $('#chatIn').value === draft.text) $('#chatIn').value = '';
+      break;
+    }
     case 'chat': addMsg(m); break;
     case 'react': floatReaction(m); break;
     case 'sfx': play(m.s); if (m.s === 'correct') confetti(40); break;
@@ -320,6 +364,8 @@ function rejectText(reason) {
     tool: 'That tool is off this turn!',
     budget: 'The canvas is full',
     onestroke: 'One stroke only!',
+    strokes: 'All five strokes used',
+    ink: 'Ink limit reached',
     locked: 'Not with this chaos!',
     paused: 'Game is paused',
   })[reason] || 'Oops — board resynced';
@@ -334,25 +380,51 @@ let strokes = [], dirty = true, lastFade = 0;
 
 const gameMs = () => clientClock(S, stateRecvAt, performance.now()).gameMs;
 const liveChaos = (id) => S?.state === 'drawing' && is(S.chaos, id);
-// Guesser-only chaos views; the artist always sees the real board.
-const guesserView = (id) => liveChaos(id) && S.drawerId !== myId;
+const guesserView = (id) => S?.state === 'drawing' && is(S.guesserChaos, id) && S.drawerId !== myId;
+const strength = () => {
+  const { left, gameMs: elapsed } = clientClock(S, stateRecvAt, performance.now());
+  return viewStrength(elapsed, left);
+};
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || guesserView('laggy');
+const timed = () => fading() || guesserView('laggy') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
   chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  lagMs: guesserView('laggy') ? LAG_MS : 0,
+  lagMs: guesserView('laggy') ? LAG_MS * strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
 const pixelCv = document.createElement('canvas');
 pixelCv.width = W / 12; pixelCv.height = H / 12;
+const puzzlePaper = Object.assign(document.createElement('canvas'), { width: W, height: H });
+const puzzleCtx = puzzlePaper.getContext('2d');
+const TILE_ORDERS = [[1,0,3,2], [1,2,3,0], [1,3,0,2], [2,0,3,1], [2,3,0,1], [2,3,1,0], [3,0,1,2], [3,2,0,1], [3,2,1,0]];
+function puzzleOrder() {
+  const order = [...TILE_ORDERS[(S.guesserChaos.seed >>> 0) % TILE_ORDERS.length]];
+  const clock = clientClock(S, stateRecvAt, performance.now());
+  const steps = Math.floor(turnProgress(clock.gameMs, clock.left) * 4.5);
+  for (let step = 0; step < steps; step++) {
+    const slot = order.findIndex((tile, i) => tile !== i);
+    if (slot < 0) break;
+    const other = order.indexOf(slot);
+    [order[slot], order[other]] = [order[other], order[slot]];
+  }
+  return order;
+}
 // Repaints the board when something changed; timed modes repaint ~10×/s.
 function present() {
   if (!dirty && !(timed() && performance.now() - lastFade > 100)) return;
-  paintPaper(ctx, strokes, renderOpts());
-  if (guesserView('pixel')) {
+  if (guesserView('puzzle')) {
+    paintPaper(puzzleCtx, strokes, renderOpts());
+    for (const [slot, tile] of puzzleOrder().entries()) {
+      ctx.drawImage(puzzlePaper, tile % 2 * W / 2, Math.floor(tile / 2) * H / 2, W / 2, H / 2,
+        slot % 2 * W / 2, Math.floor(slot / 2) * H / 2, W / 2, H / 2);
+    }
+  } else paintPaper(ctx, strokes, renderOpts());
+  if (guesserView('pixel') && strength() > 0) {
+    const block = 1 + 11 * strength();
+    pixelCv.width = Math.round(W / block); pixelCv.height = Math.round(H / block);
     const pc = pixelCv.getContext('2d');
     pc.drawImage(board, 0, 0, pixelCv.width, pixelCv.height);
     ctx.save();
@@ -369,13 +441,15 @@ function drawLive(s, from) {
   else drawStroke(ctx, s, from, renderOpts());
 }
 
-let tool = 'pen', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null;
-const canDraw = () => !!S && !S.paused && (S.state === 'lobby' || (S.state === 'drawing' && S.drawerId === myId));
+let tool = 'pen', stampShape = 'circle', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null, rawLast = null;
+const canDraw = () => !!S && ws?.readyState === 1 && !S.paused && (S.state === 'lobby' || (S.state === 'drawing' && S.drawerId === myId));
 const nid = () => Math.random().toString(36).slice(2, 10);
 const turnChaos = () => (S?.state === 'drawing' ? S.chaos : null);
 const shaky = () => is(turnChaos(), 'shaky');
-const TOOL_ORDER = ['pen', 'line', 'rect', 'ellipse', 'fill', 'eraser'];
+const TOOL_ORDER = ['pen', 'line', 'rect', 'ellipse', 'fill', 'eraser', 'stamp'];
 const effectiveTool = () => (allowedTool(turnChaos(), tool) ? tool : TOOL_ORDER.find((t) => allowedTool(turnChaos(), t)));
+const brushSize = () => liveChaos('shrinking') ? shrinkingSize(gameMs(), S.scoreLen || S.settings.drawTime * 1000)
+  : liveChaos('tiny') ? 3 : liveChaos('giant') ? 44 : size;
 
 function toXY(e) {
   const r = board.getBoundingClientRect();
@@ -389,14 +463,19 @@ function cancelLocal() {
   pending = [];
   cur = null;
   shape = null;
+  pointerId = null;
+  rawLast = null;
   drawFx();
 }
 function newStroke(t, rawPts) {
-  const s = { id: `${myId}:${nid()}`, by: myId, tool: t, pts: rawPts, color, size, t: gameMs() };
+  const s = { id: `${myId}:${nid()}`, by: myId, tool: t, pts: rawPts, color, size: brushSize(), t: gameMs() };
+  if (t === 'stamp') { s.shape = stampShape; s.size = 4; }
+  if (liveChaos('forbidden')) s.forbidden = forbiddenZone(S.chaos.seed);
   return S?.state === 'drawing' ? applyChaos(s, S.chaos) : s;
 }
 // What the server will store for these raw points (shaky jitter is applied by index).
-const shown = (s, rawPts, from = 0) => (shaky() && s.tool !== 'fill' ? jitterPts(s.id, rawPts, from) : rawPts);
+const shown = (s, rawPts, from = 0, previous) => liveChaos('slippery') ? slipperyPts(rawPts, previous)
+  : shaky() && s.tool !== 'fill' ? jitterPts(s.id, rawPts, from) : rawPts;
 function flush() {
   clearTimeout(flushT); flushT = null;
   if (cur && pending.length) act('pts', { id: cur.id, pts: pending });
@@ -405,38 +484,43 @@ function flush() {
 function refuse() {
   const tw = turnChaos();
   if (is(tw, 'onestroke') && strokes.some((s) => s.by === myId)) return '➰ One stroke only — that was it!';
+  if (is(tw, 'fivestrokes') && S.budget?.strokesLeft === 0) return 'All five strokes used';
+  if (is(tw, 'inkbudget') && (S.budget?.inkLeft ?? INK_BUDGET) < size) return 'Ink limit reached';
   if (!allowedTool(tw, effectiveTool())) return 'That tool is off this turn';
   return null;
 }
 
 board.addEventListener('pointerdown', (e) => {
-  if (e.button > 0 || !canDraw()) return;
+  if (e.button > 0 || !canDraw() || pointerId !== null) return;
   const [x, y] = toXY(e);
   const why = refuse();
   if (why) return toast(why);
   e.preventDefault();
   board.setPointerCapture(e.pointerId);
+  pointerId = e.pointerId;
   const t = effectiveTool();
   if (t === 'fill') {
     const s = newStroke('fill', [x, y]);
     strokes.push(s); drawLive(s, 0); act('stroke', { s });
-    return;
+    pointerId = null; return;
   }
-  if (t === 'line' || t === 'rect' || t === 'ellipse') { shape = newStroke(t, [x, y, x, y]); return; }
+  if (t === 'line' || t === 'rect' || t === 'ellipse' || t === 'stamp') { shape = newStroke(t, [x, y, x, y]); return; }
   cur = newStroke(t, [x, y]);
+  rawLast = [x, y];
   act('stroke', { s: { ...cur } });
   cur.pts = shown(cur, [x, y]);
   strokes.push(cur); drawLive(cur, 0);
 });
 
 board.addEventListener('pointermove', (e) => {
+  if (pointerId !== null && e.pointerId !== pointerId) return;
   const [hx, hy] = toXY(e);
   hover = canDraw() || (S?.state === 'drawing' && S.drawerId === myId) ? [hx, hy] : null;
   if ((cur || shape) && !canDraw()) cancelLocal();
   if (cur) {
     const from = cur.pts.length / 2;
     const raw = [];
-    let [lx, ly] = cur.pts.slice(-2);
+    let [lx, ly] = rawLast || cur.pts.slice(-2);
     for (const ev of e.getCoalescedEvents?.() || [e]) {
       const [px, py] = toXY(ev);
       if (Math.abs(px - lx) + Math.abs(py - ly) < 2) continue;
@@ -444,7 +528,8 @@ board.addEventListener('pointermove', (e) => {
       [lx, ly] = [px, py];
     }
     if (raw.length) {
-      cur.pts.push(...shown(cur, raw, from));
+      rawLast = [lx, ly];
+      cur.pts.push(...shown(cur, raw, from, cur.pts.slice(-2)));
       pending.push(...raw);
       drawLive(cur, from);
       if (!flushT) flushT = setTimeout(flush, 40);
@@ -455,7 +540,8 @@ board.addEventListener('pointermove', (e) => {
   drawFx();
 });
 
-function endPointer() {
+function endPointer(e) {
+  if (e.pointerId !== pointerId) return;
   if (!canDraw()) { cancelLocal(); return; }
   // Incremental painting approximates the curve's tail; repaint it exactly.
   if (cur) { flush(); cur = null; markDirty(); }
@@ -463,28 +549,45 @@ function endPointer() {
     const s = shape;
     shape = null;
     const [x1, y1, x2, y2] = s.pts;
-    if (Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
+    if (s.tool === 'stamp' || Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
       act('stroke', { s });
-      s.pts = shown(s, s.pts);
+      s.pts = s.tool === 'stamp' ? stampBounds(s.pts, s.shape) : shown(s, s.pts);
       strokes.push(s); drawLive(s, 0);
     }
   }
   drawFx();
+  pointerId = null;
 }
 board.addEventListener('pointerup', endPointer);
-board.addEventListener('pointercancel', () => { flush(); cancelLocal(); });
+board.addEventListener('pointercancel', (e) => { if (e.pointerId === pointerId) { flush(); cancelLocal(); } });
 board.addEventListener('pointerleave', () => { hover = null; drawFx(); });
 
 function drawFx() {
   fxc.clearRect(0, 0, W, H);
-  if (!S || S.paused) return;
+  if (!S) return;
+  if (guesserView('spotlight') && strength() > 0) {
+    const amount = strength(), seed = (S.guesserChaos.seed >>> 0) % 628 / 100;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const x = W / 2 + (reduced ? 0 : Math.sin(gameMs() / 4000 + seed) * 280);
+    const y = H / 2 + (reduced ? 0 : Math.cos(gameMs() / 5500 + seed) * 190);
+    const farthest = Math.hypot(Math.max(x, W - x), Math.max(y, H - y));
+    fxc.save(); fxc.fillStyle = '#ece3d0'; fxc.fillRect(0, 0, W, H);
+    fxc.globalCompositeOperation = 'destination-out';
+    fxc.beginPath(); fxc.arc(x, y, 260 + (farthest - 260) * (1 - amount), 0, Math.PI * 2); fxc.fill(); fxc.restore();
+  }
+  if (liveChaos('forbidden') && S.drawerId === myId) {
+    const zone = forbiddenZone(S.chaos.seed);
+    fxc.save(); fxc.strokeStyle = '#6840aa'; fxc.lineWidth = 3; fxc.setLineDash([10, 7]);
+    fxc.strokeRect(zone.x, zone.y, zone.w, zone.h); fxc.restore();
+  }
+  if (S.paused) return;
   // Preview what will land, including jitter.
-  if (shape) drawStroke(fxc, { ...shape, pts: shown(shape, shape.pts) });
+  if (shape) drawStroke(fxc, { ...shape, pts: shape.tool === 'stamp' ? stampBounds(shape.pts, shape.shape) : shown(shape, shape.pts) });
   if (hover && canDraw() && effectiveTool() !== 'fill') {
     fxc.save();
     fxc.lineWidth = 1.5;
     fxc.strokeStyle = 'rgba(29,27,26,.6)';
-    const r = is(turnChaos(), 'tiny') ? 3 : is(turnChaos(), 'giant') ? 44 : size;
+    const r = brushSize();
     fxc.beginPath(); fxc.arc(hover[0], hover[1], Math.max(r / 2, 2), 0, Math.PI * 2); fxc.stroke();
     fxc.restore();
   }
@@ -510,6 +613,7 @@ const avatarEl = (p, cls = '') => h('span', { class: `avatar ${cls}`, style: `ba
 const inGame = () => ['choosing', 'drawing', 'reveal'].includes(S?.state);
 
 function render(prev) {
+  if (prev && prev.seq !== S.seq && $('#confirmModal').open) $('#confirmModal').close();
   const me = playerById(myId);
   const drawer = playerById(S.drawerId);
   const isDrawer = S.drawerId === myId;
@@ -517,6 +621,8 @@ function render(prev) {
   if (changed && S.state === 'choosing' && isDrawer) play('turn');
   if (changed && S.state === 'drawing' && !isDrawer && matchMedia('(min-width: 861px)').matches) $('#chatIn').focus();
   if (changed && S.state === 'end') confetti(120);
+  if (changed && S.state === 'reveal' && S.reveal?.reason === 'all') { confetti(180); celebrate(); }
+  chaosSplash();
   if (prev?.state === 'end' && S.state !== 'end') gallery = [];
 
   const sorted = S.state === 'lobby' ? S.players : [...S.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -526,7 +632,7 @@ function render(prev) {
     const old = prev?.players.find((q) => q.id === p.id);
     const kickBtn = S.hostId === myId && p.id !== myId && h('button', {
       class: 'kick', title: `Kick ${p.name}`, 'aria-label': `Kick ${p.name}`, text: '✕',
-      onclick: () => { if (confirm(`Kick ${p.name}?`)) send('kick', { id: p.id }); },
+      onclick: () => confirmAction(`Kick ${p.name}?`, 'Kick', () => send('kick', { id: p.id })),
     });
     return h('li', { class: `pl${p.id === myId ? ' me' : ''}${p.guessed ? ' guessed' : ''}${p.id === S.drawerId && inGame() ? ' drawing' : ''}${p.connected ? '' : ' off'}` },
       h('span', { class: 'rank', text: S.state === 'lobby' ? '' : `#${rank}` }),
@@ -550,11 +656,8 @@ function render(prev) {
 
   $('#boardWrap').classList.toggle('can-draw', canDraw());
   const tw = turnChaos();
-  $('#modChip').hidden = !tw;
-  if (tw) $('#modChip').textContent = `${tw.icon} ${tw.name}`;
-  if (tw) $('#modChip').title = tw.desc;
   $('#blind').hidden = !(is(tw, 'blind') && isDrawer);
-  for (const id of ['fog', 'quake', 'spin', 'negative']) $('#boardWrap').classList.toggle(`v-${id}`, guesserView(id));
+  renderChallenge();
   const pause = $('#pauseBanner');
   pause.hidden = !S.paused;
   if (S.paused) pause.textContent = `⏸️ ${S.paused.reason || 'Paused'}`;
@@ -581,6 +684,7 @@ function renderWord(isDrawer, drawer) {
     return fill(area, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
   }
   const hint = S.hint || '';
+  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, h('span', { class: 'big', text: '?' }));
   const slots = [...hint].map((ch) => {
     if (ch === ' ') return h('span', { class: 'slot gap' });
     if (ch === '_') return h('span', { class: 'slot' }, ' ');
@@ -596,9 +700,9 @@ function renderOverlay(isDrawer, drawer) {
   const ov = $('#overlay');
   const pill = $('#settingsPill');
   let key = `${S.state}|${S.seq}`;
-  if (S.state === 'choosing') key += `|${S.drawerId}|${isDrawer}|${S.rerolled}|${(S.choices || []).map((c) => c.word).join(',')}`;
+  if (S.state === 'choosing') key += `|${S.drawerId}|${isDrawer}|${S.rerolled}|${S.chaos?.id}|${S.guesserChaos?.id}|${S.canRescue}|${(S.choices || []).map((c) => c.word).join(',')}`;
   if (S.state === 'lobby') key += `|${lobbyMinimized}|${S.hostId === myId}`;
-  const show = !(S.state === 'drawing' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
+  const show = !(S.state === 'drawing' || S.state === 'reveal' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
   ov.hidden = !show;
   $('#boardWrap').classList.toggle('expand', show);
   pill.hidden = !(S.state === 'lobby' && lobbyMinimized);
@@ -607,41 +711,147 @@ function renderOverlay(isDrawer, drawer) {
     overlayKey = key;
     if (S.state === 'lobby') fill(ov, buildLobby());
     else if (S.state === 'choosing') fill(ov, buildChoosing(isDrawer, drawer));
-    else if (S.state === 'reveal') fill(ov, buildReveal());
   }
   if (S.state === 'lobby') syncLobby();
 }
 $('#settingsPill').onclick = () => { lobbyMinimized = false; render(S); };
 
-const chaosCard = (tw) => tw && h('div', { class: 'mod-card' }, h('b', { text: `${tw.icon} ${tw.name}` }), ` — ${tw.desc}`);
+// Older snapshots may carry only { id, seed }; fill in the display fields.
+const fullMode = (m) => m && { ...CHAOS_MODES.find((x) => x.id === m.id), ...m };
+const ROLE = { artist: '✏️ Artist', guesser: '👀 Guessers' };
+const chaosCard = (tw, role) => (tw = fullMode(tw)) && h('div', { class: `mod-card ${role}` },
+  h('small', { class: 'role', text: ROLE[role] }),
+  h('b', {}, h('span', { class: 'ci', text: tw.icon }), ` ${tw.name}`), h('span', { text: tw.desc }));
+const turnModes = () => [S?.chaos, S?.guesserChaos].filter(Boolean);
+const multText = (m) => `×${Math.round(m * 10) / 10}`;
+
+function chaosPill(mode, role) {
+  mode = fullMode(mode);
+  if (!mode) return null;
+  const mine = (S.drawerId === myId) === (role === 'artist');
+  return h('div', { class: `chaos-pill ${role}${mine ? ' mine' : ''}`, title: mode.desc },
+    h('span', { class: 'ci', text: mode.icon }),
+    h('span', { class: 'ct' },
+      h('small', { text: mine ? `${ROLE[role]} · you` : ROLE[role] }),
+      h('b', { text: mode.name }),
+      h('span', { class: 'cd', text: mode.desc })));
+}
+
+// The banner above the board: this turn's challenges for both roles, the
+// difficulty multiplier, and during reveal the result of the turn.
+function renderChallenge() {
+  const strip = $('#challenge');
+  const st = S?.state;
+  strip.hidden = !inGame();
+  if (strip.hidden) { strip.dataset.mode = ''; return; }
+  if (st === 'reveal') {
+    const key = `${S.seq}:reveal`;
+    if (strip.dataset.mode !== key) {
+      strip.dataset.mode = key; strip.className = `challenge reveal-recap ${S.reveal?.reason || ''}`;
+      fill(strip, buildReveal());
+    }
+    return;
+  }
+  const [artist, guesser] = [S.chaos, S.guesserChaos];
+  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}`;
+  if (strip.dataset.mode !== key) {
+    strip.dataset.mode = key;
+    strip.className = `challenge${artist || guesser ? ' chaotic' : ''}`;
+    fill(strip,
+      h('div', { class: 'chaos-pills' }, artist || guesser ? [chaosPill(artist, 'artist'), chaosPill(guesser, 'guesser')]
+        : h('span', { class: 'calm', text: st === 'choosing' ? '😇 No chaos this turn… yet' : '😇 Classic turn — no chaos' })),
+      h('div', { class: 'stakes' },
+        h('div', { class: 'budget', hidden: true },
+          h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })),
+        S.diff ? h('span', { class: `stake ${S.diff}`, title: 'Points multiplier this turn', text: `${S.diff} ${multText(scoreMult(S.diff, turnModes()))}` }) : null));
+  }
+  const label = $('#budgetText');
+  const meter = $('#inkMeter');
+  const mode = st === 'drawing' ? (S.drawerId === myId ? S.chaos : S.guesserChaos) : null;
+  label.parentElement.hidden = !S.budget && !S.guessBudget && !is(mode, 'shrinking');
+  if (is(mode, 'shrinking')) { label.textContent = `Brush ${brushSize()}`; meter.hidden = true; }
+  if (S.guessBudget) {
+    const b = S.guessBudget, dt = S.paused ? 0 : Math.max(0, performance.now() - guessBudgetAt);
+    label.textContent = b.unlimited || strength() === 0 ? 'Unlimited guesses'
+      : `${b.remaining} attempt${b.remaining === 1 ? '' : 's'}${b.remaining < 3 ? ` · next in ${Math.max(0, Math.ceil((b.nextIn - dt) / 1000))}s` : ''}`;
+    meter.hidden = true;
+  }
+  if (S.budget?.strokesLeft != null) { label.textContent = `${S.budget.strokesLeft} strokes left`; meter.hidden = true; }
+  if (S.budget?.inkLeft != null) {
+    label.textContent = `${Math.ceil(100 * S.budget.inkLeft / INK_BUDGET)}% ink`;
+    meter.hidden = false; meter.value = S.budget.inkLeft;
+  }
+}
+
+// A loud card over the board when a chaos turn starts. Pointer events pass
+// through, so the artist can start drawing straight away.
+let splashSeq = -1, splashT = null;
+function chaosSplash() {
+  if (S.state !== 'drawing' || splashSeq === S.seq) return;
+  splashSeq = S.seq;
+  const modes = [['artist', S.chaos], ['guesser', S.guesserChaos]].filter(([, m]) => m);
+  // A reconnect mid-turn should not replay the intro.
+  if (!modes.length || (S.gameMs || 0) > 4000) return;
+  const el = $('#chaosSplash');
+  fill(el, h('div', { class: 'splash-card' },
+    h('div', { class: 'splash-title', text: modes.length > 1 ? '💥 DOUBLE CHAOS!' : '💥 CHAOS!' }),
+    modes.map(([role, m]) => {
+      m = fullMode(m);
+      return h('div', { class: `splash-mode ${role}` },
+        h('span', { class: 'ci', text: m.icon }),
+        h('span', { class: 'ct' }, h('b', { text: m.name }), h('small', { text: `${ROLE[role]} — ${m.desc}` })));
+    })));
+  el.hidden = false;
+  el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+  clearTimeout(splashT);
+  splashT = setTimeout(() => { el.hidden = true; }, 2800);
+  play('chaos');
+}
+
+function celebrate() {
+  const wrap = $('#boardWrap');
+  wrap.classList.remove('party'); void wrap.offsetWidth; wrap.classList.add('party');
+}
 
 function buildChoosing(isDrawer, drawer) {
   if (isDrawer && S.choices) {
     return h('div', { class: 'ov-inner' },
       h('h2', { text: 'Pick a word' }),
-      chaosCard(S.chaos),
+      chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'),
       h('div', { class: 'choices' }, S.choices.map((c, i) => h('button', { class: 'choice', onclick: () => act('choose', { i }) },
-        h('span', { class: `diff ${c.diff}`, text: c.diff }),
+        h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` }),
         h('span', { class: 'w', text: c.word })))),
-      S.rerolled ? null : h('button', { class: 'btn ghost', text: '🔁 New words', onclick: () => act('reroll') }));
+      h('div', { class: 'choice-actions' },
+        S.rerolled ? null : h('button', { class: 'btn ghost', text: 'New words', onclick: () => act('reroll') }),
+        S.canRescue ? h('button', { class: 'btn', text: 'Swap challenge · 1 left', title: 'Once per match', onclick: () => act('rescue') }) : null));
   }
   return h('div', { class: 'ov-inner' },
     avatarEl(drawer, 'big-av'),
     h('h2', { text: `${drawer?.name || 'Someone'} is picking…` }),
-    chaosCard(S.chaos));
+    chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'));
 }
 
 function buildReveal() {
   const r = S.reveal || {};
   const reason = { all: '🎉 Everybody got it!', time: '⏰ Time’s up!', left: '🏃 The artist left', skip: '⏭️ Skipped' }[r.reason] || '';
   const scored = (r.deltas || []).filter((d) => d.pts > 0).sort((a, b) => b.pts - a.pts);
-  return h('div', { class: 'ov-inner' },
-    h('p', { text: reason }),
-    h('div', { class: 'reveal-word', text: r.word || '' }),
-    scored.length ? h('ul', { class: 'deltas' }, scored.map((d) => {
-      const p = playerById(d.id) || { name: d.name };
-      return h('li', {}, avatarEl(p), h('span', { text: `${p.name || '?'}${d.drawer ? ' ✏️' : ''}` }), h('span', { class: 'p', text: `+${d.pts}` }));
-    })) : h('p', { text: 'Nobody got it 😬' }));
+  const recap = [['artist', r.artistChaos], ['guesser', r.guesserChaos]].filter(([, m]) => m).map(([role, m]) => {
+    m = fullMode(m);
+    return h('span', { class: `recap-mode ${role}`, text: `${m.icon} ${m.name}` });
+  });
+  return h('div', { class: 'reveal-summary' },
+    h('div', { class: 'reveal-head' },
+      h('span', { class: 'reveal-reason', text: reason }),
+      h('span', { class: 'reveal-word', text: r.word || '' }),
+      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null),
+    h('div', { class: 'reveal-scores' },
+      scored.length ? scored.map((d) => {
+        const p = playerById(d.id) || { name: d.name };
+        return h('span', { class: `delta${d.drawer ? ' drawer' : ''}` }, avatarEl(p),
+          h('span', { class: 'nm', text: `${p.name || '?'}${d.drawer ? ' ✏️' : ''}` }), h('b', { text: `+${d.pts}` }));
+      }) : h('span', { class: 'none', text: 'Nobody got it 😬' }),
+      r.allBonus ? h('span', { class: 'bonus', text: `🎉 Artist bonus +${r.allBonus}` }) : null),
+    recap.length ? h('div', { class: 'challenge-recap' }, h('small', { text: 'Chaos:' }), recap) : null);
 }
 
 const ROUNDS = [1, 2, 3, 4, 5, 6, 8, 10];
@@ -650,18 +860,24 @@ const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
 const CHAOS_OPTS = { off: 'Off', some: 'Sometimes', always: 'Every turn' };
-const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos'];
+const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
+const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
 let wordsT = null;
 function readSettings() {
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
+  const preset = q('preset').value;
   const out = {
     rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
-    difficulty: q('difficulty').value, chaos: q('chaos').value, customOnly: q('customOnly').checked,
+    difficulty: q('difficulty').value, chaos: preset === 'classic' ? 'off' : q('chaos').value,
+    chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
   if (q('customWords')) out.customWords = q('customWords').value;
   return out;
 }
-const pushSettings = () => send('settings', { settings: readSettings() });
+const pushSettings = () => {
+  clearTimeout(wordsT); wordsT = null;
+  if (S?.state === 'lobby' && $('#overlay [name=preset]')) send('settings', { settings: readSettings() });
+};
 
 function buildLobby() {
   const host = S.hostId === myId;
@@ -671,21 +887,25 @@ function buildLobby() {
       h('button', { class: 'btn primary', text: `🔗 Invite friends · ${S.code}`, onclick: copyInvite }),
       h('button', { class: 'btn ghost', text: '✏️ Doodle', title: 'Hide settings and doodle while you wait', onclick: () => { lobbyMinimized = true; render(S); } })),
     h('div', { class: 'grid' },
+      h('label', { class: 'field mode-field' }, h('span', { text: 'Mode' }), h('select', { name: 'preset', onchange: (e) => {
+        if (e.target.value !== 'classic' && $('[name=chaos]').value === 'off') $('[name=chaos]').value = 'always';
+        pushSettings();
+      } }, Object.entries(PRESETS).map(([value, text]) => h('option', { value, text })))),
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
       h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
       h('label', { class: 'field' }, h('span', { text: 'Hints' }), select('hints', HINT_COUNTS, (v) => (v ? `${v} letter${v > 1 ? 's' : ''}` : 'None'))),
       h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), select('difficulty', Object.keys(DIFFICULTIES), (v) => DIFFICULTIES[v])),
-      h('label', { class: 'field' }, h('span', { text: '💥 Chaos' }), select('chaos', Object.keys(CHAOS_OPTS), (v) => CHAOS_OPTS[v]))),
+      h('label', { class: 'field', id: 'chaosFrequency' }, h('span', { text: 'Chaos turns' }), select('chaos', ['some', 'always'], (v) => CHAOS_OPTS[v]))),
     h('details', { class: 'custom chaos-list' },
-      h('summary', { text: `💥 ${CHAOS_MODES.length} chaos modes` }),
-      h('ul', {}, CHAOS_MODES.map((c) => h('li', { title: c.desc }, h('b', { text: `${c.icon} ${c.name}` }), h('small', { text: c.desc }))))),
+      h('summary', { text: 'Challenges' }),
+      h('ul', {}, CHAOS_MODES.map((c) => h('li', {}, h('b', { text: c.name }), h('small', { text: `${c.target === 'artist' ? 'Artist' : 'Guessers'}. ${c.desc}` }))))),
     h('details', { class: 'custom' },
       h('summary', { name: 'customSum' }),
       host ? h('textarea', { name: 'customWords', placeholder: 'inside jokes, friends’ names, comma separated…', maxLength: 6000,
         oninput: () => { clearTimeout(wordsT); wordsT = setTimeout(pushSettings, 500); } }) : null,
       h('label', { class: 'toggle' }, h('input', { type: 'checkbox', name: 'customOnly', onchange: pushSettings }), h('span', { text: 'Only use our words' }))),
-    host ? h('button', { class: 'btn go big', name: 'start', onclick: () => send('start') })
+    host ? h('button', { class: 'btn go big', name: 'start', onclick: () => { pushSettings(); send('start'); } })
       : h('p', { class: 'muted', text: 'Waiting for the host to start…' }));
 }
 
@@ -697,10 +917,12 @@ function syncLobby() {
   const q = (n) => $('#overlay').querySelector(`[name=${n}]`);
   for (const k of SELECTS) {
     const sel = q(k);
-    if (![...sel.options].some((o) => o.value === String(s[k]))) sel.append(h('option', { value: String(s[k]), text: String(s[k]) }));
-    if (sel !== active) sel.value = String(s[k]);
+    const value = k === 'preset' ? (s.chaos === 'off' ? 'classic' : s.chaosPool) : k === 'chaos' && s.chaos === 'off' ? 'always' : s[k];
+    if (![...sel.options].some((o) => o.value === String(value))) sel.append(h('option', { value: String(value), text: String(value) }));
+    if (sel !== active) sel.value = String(value);
     sel.disabled = !host;
   }
+  $('#chaosFrequency').hidden = s.chaos === 'off';
   q('customOnly').checked = !!s.customOnly;
   q('customOnly').disabled = !host;
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;
@@ -729,7 +951,7 @@ function renderToolbar() {
   const locked = !lobby && !canUndo(tw);
   const solved = S.players.some((p) => p.guessed);
   const host = S.hostId === myId;
-  const key = JSON.stringify([active, size, color, S.seq, S.state, host, solved, tw?.id]);
+  const key = JSON.stringify([active, stampShape, size, color, S.seq, S.state, host, solved, tw?.id]);
   if (key === toolbarKey) return;
   toolbarKey = key;
   const tb = (name, label, on, onclick, disabled) => h('button', {
@@ -738,13 +960,15 @@ function renderToolbar() {
   const tools = [['pen', 'Pen (B)'], ['eraser', 'Eraser (E)'], ['fill', 'Fill (F)'], ['line', 'Line (L)'], ['rect', 'Rectangle (R)'], ['ellipse', 'Ellipse (O)']];
   const effSize = sizeLock ?? size;
   fill(bar,
-    h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Tools' }, tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
+    h('div', { class: 'tgroup', role: 'group', 'aria-label': is(tw, 'stamps') ? 'Stamps' : 'Tools' },
+      is(tw, 'stamps') ? STAMP_SHAPES.map((s) => tb(s, `${s[0].toUpperCase() + s.slice(1)} stamp`, stampShape === s, () => { tool = 'stamp'; stampShape = s; renderToolbar(); }))
+        : tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
       h('span', { class: 'tdiv' }),
       tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), locked),
       lobby ? (host ? tb('trash', 'Clear', false, () => act('clear')) : null)
-        : tb('trash', 'Clear canvas', false, () => { if (confirm('Clear the whole canvas?')) act('clear'); }, locked),
-      !lobby && !solved ? tb('skip', 'Skip this word', false, () => { if (confirm('Skip your turn?')) act('skip'); }) : null),
-    h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
+        : tb('trash', 'Clear canvas', false, () => confirmAction('Clear the whole canvas?', 'Clear', () => act('clear')), locked),
+      !lobby && !solved ? tb('skip', 'Skip this word', false, () => confirmAction('Skip your turn?', 'Skip', () => act('skip'))) : null),
+    is(tw, 'stamps') || is(tw, 'shrinking') ? null : h('div', { class: 'tgroup', role: 'group', 'aria-label': 'Brush size' }, SIZES.map((sz) => h('button', {
       class: `tbtn sz${effSize === sz ? ' on' : ''}`, 'aria-label': `Brush size ${sz}`, 'aria-pressed': String(effSize === sz),
       disabled: sizeLock != null, onclick: () => { size = sz; renderToolbar(); },
     }, h('span', { class: 'size-dot', style: `width:${Math.max(4, sz * 0.5)}px;height:${Math.max(4, sz * 0.5)}px` })))),
@@ -793,6 +1017,14 @@ $('#chatForm').onsubmit = (e) => {
   const input = $('#chatIn');
   const text = input.value.trim();
   if (!text) return;
+  if (ws?.readyState !== 1) { toast('Reconnecting. Your message was kept.'); return; }
+  if (S?.state === 'drawing' && is(S.guesserChaos, 'limited') && !S.word) {
+    const requestId = nid();
+    if (pendingGuesses.size >= 32) pendingGuesses.delete(pendingGuesses.keys().next().value);
+    pendingGuesses.set(requestId, { text: input.value, seq: S.seq, room: roomCode, player: myId });
+    act('chat', { text, requestId });
+    return;
+  }
   act('chat', { text });
   input.value = '';
 };
@@ -869,7 +1101,7 @@ function renderEnd(fresh) {
         h('a', { href: url, download: `squiggle-${g.word.replace(/[^a-z0-9]+/gi, '-')}.png` }).click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
-      const by = `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.icon}` : ''}`;
+      const by = `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.name}` : ''}${g.guesserChaos ? ` · ${g.guesserChaos.name}` : ''}`;
       return h('figure', { class: 'gal' },
         h('button', { class: 'thumb-btn', 'aria-label': `Open drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
@@ -890,17 +1122,44 @@ $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 // --- frame loop ----------------------------------------------------------------
 
 let lastSec = -1;
+let lastView = 0;
+const curtain = $('#curtain'), curtainCtx = curtain.getContext('2d');
+function paintGuesserView(now) {
+  if (now - lastView < 100) return;
+  lastView = now;
+  const amount = strength();
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const filters = [];
+  if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
+  if (guesserView('negative')) filters.push(`invert(${amount}) hue-rotate(${180 * amount}deg)`);
+  board.style.filter = filters.join(' ');
+  board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
+    ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
+    : guesserView('quake') && !reducedMotion && amount > 0
+      ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  curtain.hidden = !guesserView('curtain') || amount === 0;
+  if (!curtain.hidden) {
+    curtainCtx.clearRect(0, 0, W, H);
+    curtainCtx.fillStyle = '#ece3d0';
+    for (let i = 0; i < 10; i++) {
+      const width = W / 10, covered = width * amount / 2;
+      curtainCtx.fillRect(i * width, 0, covered, H);
+      curtainCtx.fillRect((i + 1) * width - covered, 0, covered, H);
+    }
+  }
+  if (guesserView('spotlight') || liveChaos('forbidden') || liveChaos('shrinking')) drawFx();
+}
 function tick() {
   requestAnimationFrame(tick);
   if (!S) return;
   const now = performance.now();
+  paintGuesserView(now);
   if (inGame()) {
     const { left } = clientClock(S, stateRecvAt, now);
-    // Foggy Glasses: the blur clears as the turn runs down.
-    if (guesserView('fog')) $('#boardWrap').style.setProperty('--fog', `${(14 * (S.phaseLen ? left / S.phaseLen : 0)).toFixed(1)}px`);
     const sec = Math.ceil(left / 1000);
     $('#timer .prog').style.strokeDashoffset = String(119.4 * (1 - (S.phaseLen ? left / S.phaseLen : 0)));
     if (sec !== lastSec) {
+      if (S.guessBudget || liveChaos('shrinking')) renderChallenge();
       $('#timerTxt').textContent = String(sec);
       const urgent = S.state === 'drawing' && sec <= 10 && !S.paused;
       $('#timer').classList.toggle('urgent', urgent);
