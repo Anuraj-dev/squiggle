@@ -1,6 +1,7 @@
 // Squiggle client: one module, no build step.
 import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
-  INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts } from './shared.js';
+  INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
+  scoreMult, DIFF_MULT } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { createMusic } from './music.js';
 
@@ -133,6 +134,7 @@ const SFX = {
   tick: () => tone(1600, 0, 0.03, 'square', 0.03),
   reveal: () => { tone(520, 0, 0.18, 'triangle'); tone(390, 0.16, 0.3, 'triangle'); },
   allgot: () => [523, 659, 784, 659, 1047].forEach((f, i) => tone(f, i * 0.08, 0.14, 'triangle', 0.12)),
+  chaos: () => { tone(180, 0, 0.35, 'sawtooth', 0.06, 720); [988, 740, 1175].forEach((f, i) => tone(f, 0.3 + i * 0.07, 0.1, 'square', 0.05)); },
   end: () => [392, 523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, i * 0.12, 0.2, 'square', 0.06)),
   pop: () => tone(700, 0, 0.06, 'sine', 0.05, 1200),
 };
@@ -619,6 +621,8 @@ function render(prev) {
   if (changed && S.state === 'choosing' && isDrawer) play('turn');
   if (changed && S.state === 'drawing' && !isDrawer && matchMedia('(min-width: 861px)').matches) $('#chatIn').focus();
   if (changed && S.state === 'end') confetti(120);
+  if (changed && S.state === 'reveal' && S.reveal?.reason === 'all') { confetti(180); celebrate(); }
+  chaosSplash();
   if (prev?.state === 'end' && S.state !== 'end') gallery = [];
 
   const sorted = S.state === 'lobby' ? S.players : [...S.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -712,35 +716,60 @@ function renderOverlay(isDrawer, drawer) {
 }
 $('#settingsPill').onclick = () => { lobbyMinimized = false; render(S); };
 
-const chaosCard = (tw) => tw && h('div', { class: `mod-card ${tw.target || 'artist'}` }, h('b', { text: tw.name }), h('span', { text: tw.desc }));
+// Older snapshots may carry only { id, seed }; fill in the display fields.
+const fullMode = (m) => m && { ...CHAOS_MODES.find((x) => x.id === m.id), ...m };
+const ROLE = { artist: '✏️ Artist', guesser: '👀 Guessers' };
+const chaosCard = (tw, role) => (tw = fullMode(tw)) && h('div', { class: `mod-card ${role}` },
+  h('small', { class: 'role', text: ROLE[role] }),
+  h('b', {}, h('span', { class: 'ci', text: tw.icon }), ` ${tw.name}`), h('span', { text: tw.desc }));
+const turnModes = () => [S?.chaos, S?.guesserChaos].filter(Boolean);
+const multText = (m) => `×${Math.round(m * 10) / 10}`;
 
+function chaosPill(mode, role) {
+  mode = fullMode(mode);
+  if (!mode) return null;
+  const mine = (S.drawerId === myId) === (role === 'artist');
+  return h('div', { class: `chaos-pill ${role}${mine ? ' mine' : ''}`, title: mode.desc },
+    h('span', { class: 'ci', text: mode.icon }),
+    h('span', { class: 'ct' },
+      h('small', { text: mine ? `${ROLE[role]} · you` : ROLE[role] }),
+      h('b', { text: mode.name }),
+      h('span', { class: 'cd', text: mode.desc })));
+}
+
+// The banner above the board: this turn's challenges for both roles, the
+// difficulty multiplier, and during reveal the result of the turn.
 function renderChallenge() {
   const strip = $('#challenge');
-  if (S?.state === 'reveal') {
+  const st = S?.state;
+  strip.hidden = !inGame();
+  if (strip.hidden) { strip.dataset.mode = ''; return; }
+  if (st === 'reveal') {
     const key = `${S.seq}:reveal`;
-    strip.hidden = false;
     if (strip.dataset.mode !== key) {
-      strip.dataset.mode = key; strip.className = 'challenge reveal-recap';
+      strip.dataset.mode = key; strip.className = `challenge reveal-recap ${S.reveal?.reason || ''}`;
       fill(strip, buildReveal());
     }
     return;
   }
-  const artist = S?.drawerId === myId;
-  const mode = S?.state === 'drawing' ? (artist ? S.chaos : S.guesserChaos) : null;
-  strip.hidden = !mode;
-  if (!mode) { strip.dataset.mode = ''; return; }
-  const key = `${S.seq}:${mode.id}`;
+  const [artist, guesser] = [S.chaos, S.guesserChaos];
+  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}`;
   if (strip.dataset.mode !== key) {
     strip.dataset.mode = key;
-    strip.className = `challenge ${artist ? 'artist' : 'guesser'}`;
-    fill(strip, h('div', {}, h('b', { text: mode.name }), h('span', { text: mode.desc })),
-      h('div', { class: 'budget', hidden: !S.budget && !S.guessBudget && mode.id !== 'shrinking' },
-        h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })));
+    strip.className = `challenge${artist || guesser ? ' chaotic' : ''}`;
+    fill(strip,
+      h('div', { class: 'chaos-pills' }, artist || guesser ? [chaosPill(artist, 'artist'), chaosPill(guesser, 'guesser')]
+        : h('span', { class: 'calm', text: st === 'choosing' ? '😇 No chaos this turn… yet' : '😇 Classic turn — no chaos' })),
+      h('div', { class: 'stakes' },
+        h('div', { class: 'budget', hidden: true },
+          h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })),
+        S.diff ? h('span', { class: `stake ${S.diff}`, title: 'Points multiplier this turn', text: `${S.diff} ${multText(scoreMult(S.diff, turnModes()))}` }) : null));
   }
   const label = $('#budgetText');
   const meter = $('#inkMeter');
-  label.parentElement.hidden = !S.budget && !S.guessBudget && mode.id !== 'shrinking';
-  if (mode.id === 'shrinking') { label.textContent = `Brush ${brushSize()}`; meter.hidden = true; }
+  const mode = st === 'drawing' ? (S.drawerId === myId ? S.chaos : S.guesserChaos) : null;
+  label.parentElement.hidden = !S.budget && !S.guessBudget && !is(mode, 'shrinking');
+  if (is(mode, 'shrinking')) { label.textContent = `Brush ${brushSize()}`; meter.hidden = true; }
   if (S.guessBudget) {
     const b = S.guessBudget, dt = S.paused ? 0 : Math.max(0, performance.now() - guessBudgetAt);
     label.textContent = b.unlimited || strength() === 0 ? 'Unlimited guesses'
@@ -754,13 +783,43 @@ function renderChallenge() {
   }
 }
 
+// A loud card over the board when a chaos turn starts. Pointer events pass
+// through, so the artist can start drawing straight away.
+let splashSeq = -1, splashT = null;
+function chaosSplash() {
+  if (S.state !== 'drawing' || splashSeq === S.seq) return;
+  splashSeq = S.seq;
+  const modes = [['artist', S.chaos], ['guesser', S.guesserChaos]].filter(([, m]) => m);
+  // A reconnect mid-turn should not replay the intro.
+  if (!modes.length || (S.gameMs || 0) > 4000) return;
+  const el = $('#chaosSplash');
+  fill(el, h('div', { class: 'splash-card' },
+    h('div', { class: 'splash-title', text: modes.length > 1 ? '💥 DOUBLE CHAOS!' : '💥 CHAOS!' }),
+    modes.map(([role, m]) => {
+      m = fullMode(m);
+      return h('div', { class: `splash-mode ${role}` },
+        h('span', { class: 'ci', text: m.icon }),
+        h('span', { class: 'ct' }, h('b', { text: m.name }), h('small', { text: `${ROLE[role]} — ${m.desc}` })));
+    })));
+  el.hidden = false;
+  el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+  clearTimeout(splashT);
+  splashT = setTimeout(() => { el.hidden = true; }, 2800);
+  play('chaos');
+}
+
+function celebrate() {
+  const wrap = $('#boardWrap');
+  wrap.classList.remove('party'); void wrap.offsetWidth; wrap.classList.add('party');
+}
+
 function buildChoosing(isDrawer, drawer) {
   if (isDrawer && S.choices) {
     return h('div', { class: 'ov-inner' },
       h('h2', { text: 'Pick a word' }),
-      chaosCard(S.chaos),
+      chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'),
       h('div', { class: 'choices' }, S.choices.map((c, i) => h('button', { class: 'choice', onclick: () => act('choose', { i }) },
-        h('span', { class: `diff ${c.diff}`, text: c.diff }),
+        h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` }),
         h('span', { class: 'w', text: c.word })))),
       h('div', { class: 'choice-actions' },
         S.rerolled ? null : h('button', { class: 'btn ghost', text: 'New words', onclick: () => act('reroll') }),
@@ -769,22 +828,30 @@ function buildChoosing(isDrawer, drawer) {
   return h('div', { class: 'ov-inner' },
     avatarEl(drawer, 'big-av'),
     h('h2', { text: `${drawer?.name || 'Someone'} is picking…` }),
-    chaosCard(S.guesserChaos));
+    chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'));
 }
 
 function buildReveal() {
   const r = S.reveal || {};
   const reason = { all: '🎉 Everybody got it!', time: '⏰ Time’s up!', left: '🏃 The artist left', skip: '⏭️ Skipped' }[r.reason] || '';
   const scored = (r.deltas || []).filter((d) => d.pts > 0).sort((a, b) => b.pts - a.pts);
+  const recap = [['artist', r.artistChaos], ['guesser', r.guesserChaos]].filter(([, m]) => m).map(([role, m]) => {
+    m = fullMode(m);
+    return h('span', { class: `recap-mode ${role}`, text: `${m.icon} ${m.name}` });
+  });
   return h('div', { class: 'reveal-summary' },
-    h('p', { text: reason }),
-    h('div', { class: 'challenge-recap' },
-      r.artistChaos && h('span', { text: `Artist: ${r.artistChaos.name}` }),
-      r.guesserChaos && h('span', { text: `Guessers: ${r.guesserChaos.name}` })),
-    scored.length ? h('div', { class: 'reveal-scores' }, scored.map((d) => {
-      const p = playerById(d.id) || { name: d.name };
-      return h('span', { text: `${p.name || '?'} +${d.pts}` });
-    })) : h('p', { text: 'Nobody got it 😬' }));
+    h('div', { class: 'reveal-head' },
+      h('span', { class: 'reveal-reason', text: reason }),
+      h('span', { class: 'reveal-word', text: r.word || '' }),
+      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null),
+    h('div', { class: 'reveal-scores' },
+      scored.length ? scored.map((d) => {
+        const p = playerById(d.id) || { name: d.name };
+        return h('span', { class: `delta${d.drawer ? ' drawer' : ''}` }, avatarEl(p),
+          h('span', { class: 'nm', text: `${p.name || '?'}${d.drawer ? ' ✏️' : ''}` }), h('b', { text: `+${d.pts}` }));
+      }) : h('span', { class: 'none', text: 'Nobody got it 😬' }),
+      r.allBonus ? h('span', { class: 'bonus', text: `🎉 Artist bonus +${r.allBonus}` }) : null),
+    recap.length ? h('div', { class: 'challenge-recap' }, h('small', { text: 'Chaos:' }), recap) : null);
 }
 
 const ROUNDS = [1, 2, 3, 4, 5, 6, 8, 10];
