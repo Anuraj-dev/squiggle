@@ -5,7 +5,7 @@ import { clock, onMessage, onClose, rooms } from './game.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS,
   guesserPts, drawerPts, jitterPts,
-  INK_BUDGET, STROKE_BUDGET, forbiddenZone, slipperyPts,
+  INK_BUDGET, STROKE_BUDGET, forbiddenZone, slipperyPts, CHAOS_MODES,
 } from './public/shared.js';
 
 let now = 1e6, timers = [], tid = 0;
@@ -151,18 +151,53 @@ test('late joiners spectate: no points, no speedup, word stays hidden from other
   expect(drawer.chats(j).some((m) => m.text === 'easy one')).toBe(true);
 });
 
-test('drawer score uses the turn-start denominator; a leaving guesser does not change it', () => {
+test('drawer score uses the turn-start denominator; a leaving guesser only adds the all-guessed bonus', () => {
   const ctx = setup(3);
   const { drawer, guessers: [b, c], word } = startDrawing(ctx);
   b.act('chat', { text: word });
-  const expected = drawerPts({ solved: 1, eligible: 2, diff: ctx.room.diff, chaos: ctx.room.chaos });
+  const modes = [ctx.room.chaos, ctx.room.guesserChaos].filter(Boolean);
+  const expected = drawerPts({ solved: 1, eligible: 2, diff: ctx.room.diff, chaos: modes });
   const dp = () => ctx.room.players.get(drawer.id).score;
   expect(dp()).toBe(expected);
   c.do('leave');
-  expect(dp()).toBe(expected);
+  const withBonus = drawerPts({ solved: 1, eligible: 2, diff: ctx.room.diff, chaos: modes, all: true });
+  expect(dp()).toBe(withBonus);
   expect(ctx.room.state).toBe('reveal');
   expect(ctx.room.reveal.reason).toBe('all');
-  expect(ctx.room.reveal.deltas.find((d) => d.drawer).pts).toBe(expected);
+  expect(ctx.room.reveal.deltas.find((d) => d.drawer).pts).toBe(withBonus);
+});
+
+test('drawer all-guessed bonus only when every eligible guesser solved; reveal carries the multiplier', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b, c], word } = startDrawing(ctx);
+  ctx.room.diff = 'hard';
+  ctx.room.chaos = null;
+  ctx.room.guesserChaos = null;
+  const dp = () => ctx.room.players.get(drawer.id).score;
+  b.act('chat', { text: word });
+  expect(ctx.room.state).toBe('drawing');
+  expect(dp()).toBe(220); // 200 * 0.5 * 2.2, no all-guessed bonus yet
+  c.act('chat', { text: word });
+  expect(ctx.room.state).toBe('reveal');
+  expect(ctx.room.reveal.reason).toBe('all');
+  expect(dp()).toBe(660); // (200 + 100) * 2.2
+  expect(ctx.room.reveal.diff).toBe('hard');
+  expect(ctx.room.reveal.mult).toBe(2.2);
+  expect(ctx.room.reveal.allBonus).toBe(220);
+  expect(ctx.room.reveal.deltas.find((d) => d.drawer).pts).toBe(660);
+});
+
+test('when the last unsolved guesser leaves, the drawer still earns the all-guessed bonus it shows', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b, c], word } = startDrawing(ctx);
+  ctx.room.diff = 'hard';
+  ctx.room.chaos = null;
+  ctx.room.guesserChaos = null;
+  b.act('chat', { text: word });
+  c.do('leave');
+  expect(ctx.room.reveal.reason).toBe('all');
+  expect(ctx.room.players.get(drawer.id).score).toBe(440); // (200 / 2 + 100) * 2.2
+  expect(ctx.room.reveal.allBonus).toBe(220);
 });
 
 test('a disconnected eligible guesser does not end the turn early', () => {
@@ -186,9 +221,10 @@ test('speedup keeps the original score curve and reschedules hints', () => {
   advance(5000);
   c.act('chat', { text: word });
   const pts = ctx.room.guessed.get(c.id).pts;
-  expect(pts).toBe(guesserPts({ elapsed: 25000, scoreLen: 80000, diff: ctx.room.diff, chaos: ctx.room.chaos, streak: 1 }));
+  const modes = [ctx.room.chaos, ctx.room.guesserChaos].filter(Boolean);
+  expect(pts).toBe(guesserPts({ elapsed: 25000, scoreLen: 80000, diff: ctx.room.diff, chaos: modes, streak: 1 }));
   // Scoring against the shortened 45s turn would have paid less.
-  expect(pts).toBeGreaterThan(guesserPts({ elapsed: 25000, scoreLen: 45000, diff: ctx.room.diff, chaos: ctx.room.chaos, streak: 1 }));
+  expect(pts).toBeGreaterThan(guesserPts({ elapsed: 25000, scoreLen: 45000, diff: ctx.room.diff, chaos: modes, streak: 1 }));
 });
 
 test('hints still arrive after a speedup shortens the turn', () => {
@@ -402,10 +438,14 @@ test('choosing times out to a random pick under the fake clock', () => {
   expect(ctx.room.state).toBe('drawing');
 });
 
-test('chaos: off by default, artist pool never repeats the previous challenge', () => {
-  const off = setup(2);
+test('chaos: "some" by default, "off" never rolls, artist pool never repeats the previous challenge', () => {
+  // A fresh room (no settings message yet) uses DEFAULTS.
+  const host = sock('Host'); host.do('join', { name: 'H' });
+  expect(rooms.get(host.out.find((m) => m.t === 'welcome').code).settings.chaos).toBe('some');
+  const off = setup(2, { chaos: 'off' });
   startDrawing(off);
   expect(off.room.chaos).toBeNull();
+  expect(off.room.guesserChaos).toBeNull();
   const ctx = setup(2, { chaos: true, chaosPool: 'artist', rounds: 5, customWords: 'cat, dog, cow' });
   ctx.ss[0].do('start');
   let prev = null;
@@ -425,7 +465,7 @@ test('chaos: off by default, artist pool never repeats the previous challenge', 
 test('speedrun halves the turn; clear wipes the canvas; blank turns skip the gallery', () => {
   const ctx = setup(2, { chaos: true });
   ctx.ss[0].do('start');
-  ctx.room.chaos = tw('speed');
+  ctx.room.chaos = tw('speed'); ctx.room.guesserChaos = null;
   const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
   const g = ctx.ss.find((s) => s !== drawer);
   drawer.act('choose', { i: 0 });
@@ -449,7 +489,7 @@ test('host settings: word choices, hints, difficulty and chaos level', () => {
   const drawer = ctx.ss.find((x) => x.id === ctx.room.drawerId);
   expect(drawer.state().choices.length).toBe(5);
   expect(drawer.state().choices.every((c) => c.diff === 'hard')).toBe(true);
-  ctx.room.chaos = tw('mirror');
+  ctx.room.chaos = tw('mirror'); ctx.room.guesserChaos = null;
   drawer.act('choose', { i: 0 });
   const letters = [...ctx.room.word].filter((ch) => /[a-z0-9]/i.test(ch)).length;
   expect(ctx.room.hintPlan.length).toBe(Math.min(4, Math.floor(letters / 2)));
@@ -461,7 +501,7 @@ test('host settings: word choices, hints, difficulty and chaos level', () => {
 });
 
 test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
-  const ctx = setup(2, { hints: 5 });
+  const ctx = setup(2, { hints: 5, chaos: 'off' });
   ctx.ss[0].do('start');
   expect(ctx.room.chaos).toBeNull();
   ctx.room.guesserChaos = tw('nohints');
@@ -584,7 +624,7 @@ test('rescue is artist-only, once per match, and survives reconnect', () => {
   expect(ctx.room.players.get(drawer.id).rescued).toBe(false);
 });
 
-test('presets use separate pools; mixed chooses either role or a mild pair', () => {
+test('presets use separate pools; mixed pairs 35% of turns with a mild guesser side', () => {
   const ctx = setup(2, { chaos: 'always' });
   const rng = spyOn(Math, 'random');
   try {
@@ -594,25 +634,43 @@ test('presets use separate pools; mixed chooses either role or a mild pair', () 
       expect(target === 'artist' ? ctx.room.guesserChaos : ctx.room.chaos).toBeNull();
     }
     ctx.room.settings.chaosPool = 'mixed';
-    rng.mockReturnValueOnce(0.3).mockReturnValueOnce(0.4); ctx.room.rollChaos();
+    // Pair roll 0.5 (no pair), then role roll 0.4 picks the artist side.
+    rng.mockReturnValueOnce(0.5).mockReturnValueOnce(0.4); ctx.room.rollChaos();
     expect(ctx.room.chaos).not.toBeNull(); expect(ctx.room.guesserChaos).toBeNull();
-    rng.mockReturnValueOnce(0.3).mockReturnValueOnce(0.6); ctx.room.rollChaos();
+    // Role roll 0.6 picks the guesser side.
+    rng.mockReturnValueOnce(0.5).mockReturnValueOnce(0.6); ctx.room.rollChaos();
     expect(ctx.room.chaos).toBeNull(); expect(ctx.room.guesserChaos).not.toBeNull();
-    rng.mockReturnValueOnce(0.1); ctx.room.rollChaos();
-    expect(ctx.room.chaos.mild).toBe(true); expect(ctx.room.guesserChaos.mild).toBe(true);
+    // Pair roll 0.34 is a pair (below 0.35). The artist side may be a full challenge.
+    const artistPool = CHAOS_MODES.filter((m) => m.target === 'artist');
+    const full = artistPool.findIndex((m) => !m.mild);
+    expect(full).toBeGreaterThanOrEqual(0);
+    ctx.room.lastChaosId = null; ctx.room.lastGuesserChaosId = null;
+    // Draw order: pair, role, artist seed (picks index `full`), guesser seed.
+    rng.mockReturnValueOnce(0.34).mockReturnValueOnce(0.5).mockReturnValueOnce((full + 0.5) / 0xffffffff).mockReturnValueOnce(0.5);
+    ctx.room.rollChaos();
+    expect(ctx.room.chaos.id).toBe(artistPool[full].id); expect(ctx.room.chaos.mild).toBeFalsy();
+    expect(ctx.room.guesserChaos.mild).toBe(true);
     expect(['mystery', 'curtain', 'batches']).toContain(ctx.room.guesserChaos.id);
+    // Pair roll 0.36 is just above the 35% line, so no pair: the role roll 0.4 picks the artist side.
+    rng.mockReturnValueOnce(0.36).mockReturnValueOnce(0.4); ctx.room.rollChaos();
+    expect(ctx.room.chaos).not.toBeNull(); expect(ctx.room.guesserChaos).toBeNull();
   } finally { rng.mockRestore(); }
 });
 
-test('role cards keep artist instructions private and reveal both challenges afterward', () => {
+test('role cards: both challenges are public to every player in every state', () => {
   const ctx = setup(3);
   ctx.ss[0].do('start'); ctx.room.chaos = { ...tw('fivestrokes'), name: 'Five Strokes', desc: 'Five pen strokes.' };
   ctx.room.guesserChaos = { ...tw('curtain'), name: 'Curtain Reveal', desc: 'The drawing opens in strips.' };
   ctx.room.sync();
   const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId), guessers = ctx.ss.filter((s) => s !== drawer);
-  for (const g of guessers) { expect(g.state().chaos).toBeNull(); expect(g.state().guesserChaos.id).toBe('curtain'); }
+  for (const g of guessers) { expect(g.state().chaos.name).toBe('Five Strokes'); expect(g.state().guesserChaos.id).toBe('curtain'); }
   drawer.act('choose', { i: 0 });
-  for (const g of guessers) { expect(g.state().chaos.name).toBeUndefined(); expect(g.state().word).toBeNull(); }
+  for (const g of guessers) {
+    expect(g.state().state).toBe('drawing');
+    expect(g.state().chaos).toEqual(ctx.room.chaos);
+    expect(g.state().guesserChaos.name).toBe('Curtain Reveal');
+    expect(g.state().word).toBeNull();
+  }
   drawer.act('skip');
   for (const g of guessers) {
     expect(g.state().reveal.artistChaos.name).toBe('Five Strokes');
@@ -699,7 +757,8 @@ test('batch timers freeze during pause and release after speedup and at reveal',
   expect(back.out.findLast((m) => m.t === 'canvas').strokes[0].pts).toEqual([10, 10, 30, 30]);
   const d = startChallenges(3, null, 'batches'), [a, b] = d.guessers;
   advance(10001); a.act('chat', { text: d.room.word });
-  advance(13332); expect(d.room.batchReleased).toBe(false);
+  // Turn total is 10001 + 25000 after the speedup; relief is at 85% of it (29750.85 ms, so 29751 ms elapsed).
+  advance(19749); expect(d.room.batchReleased).toBe(false);
   advance(1); expect(d.room.batchReleased).toBe(true);
   const i = b.mark(); d.drawer.act('stroke', { s: pen('live', [5, 5]) });
   expect(b.since(i, 'stroke')).toHaveLength(1);
@@ -739,7 +798,9 @@ test('limited attempt replenishment and relief share unpaused time and reject st
   const back = sock('back'); back.do('join', { room: c.code, token });
   advance(3999); expect(c.room.guessBudget(p).remaining).toBe(2);
   advance(1); expect(c.room.guessBudget(p).remaining).toBe(3);
-  advance(45334); expect(c.room.guessBudget(p).unlimited).toBe(true);
+  // Turn total is 80000 ms; relief is at 85% (68000 ms elapsed). Unpaused elapsed is 8000 here.
+  advance(59999); expect(c.room.guessBudget(p).unlimited).toBe(false);
+  advance(1); expect(c.room.guessBudget(p).unlimited).toBe(true);
   for (const text of ['abc', 'def', 'ghi', 'jkl']) g.act('chat', { text, requestId: text });
   expect(g.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: true });
   expect(c.room.guessBudget(p).remaining).toBe(3);

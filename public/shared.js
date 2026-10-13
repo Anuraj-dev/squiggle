@@ -3,7 +3,7 @@
 
 export const W = 1000, H = 750;
 export const CHOOSE_MS = 15000, REVEAL_MS = 6000;
-export const DIFF_MULT = { easy: 1, medium: 1.3, hard: 1.7 };
+export const DIFF_MULT = { easy: 1, medium: 1.5, hard: 2.2 };
 export const MAX_STROKES = 2500;
 export const MAX_STROKE_PTS = 8000;
 export const MAX_TURN_COORDS = 80000;
@@ -70,11 +70,18 @@ export function pickChaos(seed, prevId, target, mild = false) {
   return { ...pool[seed % pool.length], seed };
 }
 
+// Guesser relief: challenge effects stay full until FADE_FROM of the turn, then fade to 0 at RELIEF_AT.
+export const RELIEF_AT = 0.85;
+const FADE_FROM = 0.4;
 // Same elapsed clock and deadline for every guesser. A speedup brings relief forward.
 export function turnProgress(elapsed, left) {
   return elapsed + left > 0 ? Math.min(1, Math.max(0, elapsed / (elapsed + left))) : 1;
 }
-export const viewStrength = (elapsed, left) => Math.max(0, 1 - turnProgress(elapsed, left) * 1.5);
+export function viewStrength(elapsed, left) {
+  const p = turnProgress(elapsed, left);
+  if (p <= FADE_FROM) return 1;
+  return Math.max(0, (RELIEF_AT - p) / (RELIEF_AT - FADE_FROM));
+}
 
 export function forbiddenZone(seed = 0) {
   const n = seed >>> 0;
@@ -174,9 +181,14 @@ export function shuffleIn(a, rnd) {
 
 // --- scoring ---------------------------------------------------------------
 
-// A chaos mode makes drawing harder, so it pays a little more; Speedrun pays most.
-export function scoreMult(diff, chaos) {
-  return (DIFF_MULT[diff] || 1) * (!chaos ? 1 : is(chaos, 'speed') ? 1.5 : 1.2);
+// Harder words pay more. Each active chaos mode (artist and guesser) adds 25%,
+// and Speedrun adds another 25% on top. `modes` is an array of mode objects,
+// a single mode, or null.
+export function scoreMult(diff, modes) {
+  const list = (Array.isArray(modes) ? modes : [modes]).filter(Boolean);
+  const chaosMult = 1 + 0.25 * list.length;
+  const speedMult = list.some((m) => m?.id === 'speed') ? 1.25 : 1;
+  return (DIFF_MULT[diff] || 1) * chaosMult * speedMult;
 }
 
 // Share of the speed bonus still on offer. Time counts in whole seconds and
@@ -192,17 +204,24 @@ export function timeFrac(elapsed, scoreLen) {
 // elapsed is unpaused turn time; scoreLen is the turn length at the start of
 // the turn, so a speedup that shortens the deadline never changes the curve.
 // No first-guesser bonus: a 1 ms tie must not be worth points.
+// chaos is the array of active modes for the turn (see scoreMult).
 export function guesserPts({ elapsed, scoreLen, diff, chaos, streak }) {
   const streakN = Math.min(5, Math.max(0, (streak || 1) - 1));
-  return Math.round((120 + 180 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 15;
+  return Math.round((100 + 200 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 20;
 }
 
 // eligible is the number of guessers present when drawing started; it does
-// not shrink when someone leaves, so the drawer's share stays stable.
-export function drawerPts({ solved, eligible, diff, chaos }) {
+// not shrink when someone leaves, so the drawer's share stays stable. `all`
+// means every guesser still in the room solved it, which earns the bonus.
+export function drawerPts({ solved, eligible, diff, chaos, all }) {
   if (!eligible) return 0;
   const frac = Math.max(0, Math.min(1, solved / eligible));
-  return Math.round(180 * frac * scoreMult(diff, chaos));
+  const bonus = all ? 100 : 0;
+  return Math.round((200 * frac + bonus) * scoreMult(diff, chaos));
+}
+
+export function allBonus(diff, chaos) {
+  return Math.round(100 * scoreMult(diff, chaos));
 }
 
 export function tiedRanking(players) {

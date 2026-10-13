@@ -5,10 +5,10 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  CHAOS_LEVELS, CHAOS_POOLS, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress,
+  CHAOS_LEVELS, CHAOS_POOLS, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
   stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
-  guesserPts, drawerPts, tiedRanking,
+  guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
 } from './public/shared.js';
 
@@ -19,7 +19,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'off', chaosPool: 'mixed', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'some', chaosPool: 'mixed', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
@@ -134,7 +134,7 @@ export class Room {
 
   broadcastDraw(t, data = {}, exceptId = null) {
     const held = this.batching();
-    if (held && turnProgress(this.clockMs(), this.timeLeft()) >= 2 / 3) {
+    if (held && turnProgress(this.clockMs(), this.timeLeft()) >= RELIEF_AT) {
       this.batchReleased = true;
       this.publishCanvas();
     }
@@ -195,8 +195,7 @@ export class Room {
       diff: this.word ? this.diff : null,
       choices: this.state === 'choosing' && p.id === this.drawerId ? this.choices : null,
       rerolled: this.rerolled,
-      chaos: this.chaos && (p.id === this.drawerId || this.state === 'reveal' ? this.chaos
-        : drawing ? { id: this.chaos.id, seed: this.chaos.seed } : null),
+      chaos: this.chaos,
       guesserChaos: this.guesserChaos,
       budget: p.id === this.drawerId ? this.drawBudget() : null,
       guessBudget: this.guessBudget(p),
@@ -234,7 +233,7 @@ export class Room {
       b.remaining = Math.min(3, b.remaining + fills);
       b.refillAt += fills * 4000;
     }
-    return { remaining: b.remaining, nextIn: Math.max(0, b.refillAt - elapsed), unlimited: turnProgress(elapsed, this.timeLeft()) >= 2 / 3 };
+    return { remaining: b.remaining, nextIn: Math.max(0, b.refillAt - elapsed), unlimited: turnProgress(elapsed, this.timeLeft()) >= RELIEF_AT };
   }
 
   sendGuessBudget(p) {
@@ -249,12 +248,13 @@ export class Room {
     const batches = is(this.guesserChaos, 'batches'), limited = is(this.guesserChaos, 'limited');
     if (!batches && !limited) return;
     const elapsed = this.clockMs(), left = this.timeLeft();
-    if (turnProgress(elapsed, left) >= 2 / 3) {
+    if (turnProgress(elapsed, left) >= RELIEF_AT) {
       if (batches && !this.batchReleased) { this.batchReleased = true; this.publishCanvas(); }
       if (limited) for (const p of this.players.values()) this.sendGuessBudget(p);
       return;
     }
-    const reliefIn = Math.ceil((2 * left - elapsed) / 3);
+    // Unpaused ms until progress reaches RELIEF_AT; the turn total (elapsed + left) is fixed while running.
+    const reliefIn = Math.max(1, Math.ceil(RELIEF_AT * (elapsed + left) - elapsed));
     let delay = reliefIn;
     if (batches) delay = Math.min(delay, 2000 - elapsed % 2000);
     if (limited) for (const p of this.players.values()) {
@@ -266,7 +266,7 @@ export class Room {
       this.challengeTimer = null;
       if (this.state !== 'drawing' || this.turnSeq !== seq || this.pausedAt) return;
       if (batches) {
-        if (turnProgress(this.clockMs(), this.timeLeft()) >= 2 / 3) this.batchReleased = true;
+        if (turnProgress(this.clockMs(), this.timeLeft()) >= RELIEF_AT) this.batchReleased = true;
         this.publishCanvas();
       }
       if (limited) for (const p of this.players.values()) this.sendGuessBudget(p);
@@ -280,10 +280,11 @@ export class Room {
     if (this.settings.chaos === 'off' || (this.settings.chaos === 'some' && Math.random() >= 0.5)) return;
     const seed = () => (Math.random() * 0xffffffff) >>> 0;
     const pool = this.settings.chaosPool;
-    const both = pool === 'mixed' && Math.random() < 0.2;
+    // A paired turn keeps the guesser side mild so the artist can still get a full challenge.
+    const both = pool === 'mixed' && Math.random() < 0.35;
     const target = pool === 'mixed' ? (Math.random() < 0.5 ? 'artist' : 'guesser') : pool;
     if (both || target === 'artist') {
-      this.chaos = pickChaos(seed(), this.lastChaosId, 'artist', both);
+      this.chaos = pickChaos(seed(), this.lastChaosId, 'artist');
       this.lastChaosId = this.chaos.id;
     }
     if (both || target === 'guesser') {
@@ -513,7 +514,10 @@ export class Room {
   }
 
   awardDrawer() {
-    const total = drawerPts({ solved: this.guessed.size, eligible: this.turnEligible.length, diff: this.diff, chaos: this.chaos || this.guesserChaos });
+    const total = drawerPts({
+      solved: this.guessed.size, eligible: this.turnEligible.length, diff: this.diff,
+      chaos: [this.chaos, this.guesserChaos].filter(Boolean), all: this.allSolved(),
+    });
     const drawer = this.players.get(this.drawerId);
     if (drawer) drawer.score += total - this.drawerAward;
     this.drawerAward = total;
@@ -576,7 +580,7 @@ export class Room {
     const first = this.guessed.size === 0;
     p.streak++;
     p.bestStreak = Math.max(p.bestStreak, p.streak);
-    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: this.chaos || this.guesserChaos, streak: p.streak });
+    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: [this.chaos, this.guesserChaos].filter(Boolean), streak: p.streak });
     this.guessed.set(p.id, { pts, ms: elapsed, name: p.name });
     p.score += pts;
     if (p.fastest == null || elapsed < p.fastest) p.fastest = elapsed;
@@ -614,7 +618,12 @@ export class Room {
     }
     const deltas = [...this.guessed.entries()].map(([id, x]) => ({ id, name: x.name, pts: x.pts, ms: x.ms }));
     if (drawer) deltas.unshift({ id: drawer.id, name: drawer.name, pts: this.drawerAward, drawer: true });
-    this.reveal = { word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos };
+    const modes = [this.chaos, this.guesserChaos].filter(Boolean);
+    this.reveal = {
+      word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos,
+      diff: this.diff, mult: Math.round(scoreMult(this.diff, modes) * 100) / 100,
+      allBonus: reason === 'all' ? allBonus(this.diff, modes) : 0,
+    };
     this.phase(REVEAL_MS, () => this.nextTurn());
     this.broadcast('sfx', { s: reason === 'all' ? 'allgot' : 'reveal' });
     this.updatePause();
@@ -771,7 +780,7 @@ const handlers = {
   },
   rescue(room, p, m) {
     if (p.id !== room.drawerId || room.state !== 'choosing' || m.seq !== room.turnSeq || p.rescued || !room.chaos || room.pausedAt || room.pastDeadline()) return;
-    room.chaos = pickChaos((Math.random() * 0xffffffff) >>> 0, room.chaos.id, 'artist', !!room.guesserChaos);
+    room.chaos = pickChaos((Math.random() * 0xffffffff) >>> 0, room.chaos.id, 'artist');
     room.lastChaosId = room.chaos.id;
     p.rescued = true;
     room.sync();
