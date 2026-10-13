@@ -491,5 +491,6 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .music-panel label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; font-weight: 600; }
 .music-panel input[type=range] { flex: 1; accent-color: var(--grape); }
 #musicBtn.on { background: var(--sun); }
+.music-panel .sfx-toggle + .sfx-toggle { border-top: 0; padding-top: 0; }
 .music-panel .sfx-toggle { border-top: 2px dashed var(--line-soft, #d8d0c4); padding-top: 0.55rem; }
 .music-panel .sfx-toggle input { width: 18px; height: 18px; accent-color: var(--grape); }
