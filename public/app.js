@@ -3,6 +3,7 @@ import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, pod
   INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   scoreMult, DIFF_MULT } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
+import { renderShareCard } from './share.js';
 import { createMusic } from './music.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -1072,6 +1073,28 @@ function closeDialogs() {
   if (modal.open) modal.close();
 }
 
+const byline = (g) => `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.name}` : ''}${g.guesserChaos ? ` · ${g.guesserChaos.name}` : ''}`;
+
+// One PNG with the leaderboard, awards and every drawing, ready to post.
+async function saveResultsImage(btn, data) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Making image…';
+  try {
+    const cv = await renderShareCard(data);
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    if (!blob) throw new Error('empty image');
+    const url = URL.createObjectURL(blob);
+    h('a', { href: url, download: `squiggle-results-${S?.code || roomCode || 'game'}.png` }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Results image saved 📸');
+  } catch (err) {
+    console.error(err);
+    toast('Could not make the image — try again');
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
 function renderEnd(fresh) {
   const modal = $('#endModal');
   const host = S.hostId === myId;
@@ -1106,7 +1129,7 @@ function renderEnd(fresh) {
         h('a', { href: url, download: `squiggle-${g.word.replace(/[^a-z0-9]+/gi, '-')}.png` }).click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
-      const by = `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}${g.chaos ? ` · ${g.chaos.name}` : ''}${g.guesserChaos ? ` · ${g.guesserChaos.name}` : ''}`;
+      const by = byline(g);
       return h('figure', { class: 'gal' },
         h('button', { class: 'thumb-btn', 'aria-label': `Open drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
@@ -1115,6 +1138,8 @@ function renderEnd(fresh) {
     })),
     h('div', { class: 'end-actions' },
       h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby', onclick: () => send('again') }),
+      h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
+        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes })) }) }),
       h('button', { class: 'btn big', text: '🔗 Invite more friends', onclick: copyInvite }),
       h('p', { class: 'muted', name: 'waitHost', hidden: host, text: 'The host can take everyone back to the lobby for another game.' }))));
   if (!modal.open) modal.showModal();
