@@ -157,6 +157,10 @@ music.subscribe((m) => {
   $('#musicBtn').classList.toggle('on', m.playing && !m.muted);
   $('#musicBtn').textContent = m.muted ? '🔇' : '🎵';
   $('#musicIn').checked = !m.muted;
+  $('#homeMute').textContent = m.muted ? '🔇' : '🎵';
+  $('#homeMute').setAttribute('aria-pressed', String(m.muted));
+  $('#homeMute').setAttribute('aria-label', m.muted ? 'Unmute music' : 'Mute music');
+  $('#homeMute').title = m.muted ? 'Unmute music' : 'Mute music';
   $('#musicVol').value = String(Math.round(m.volume * 100));
   musicPrefs.muted = m.muted;
   store.set('sq-music', { on: musicPrefs.on, volume: m.volume, track: m.index, muted: m.muted });
@@ -168,6 +172,7 @@ addEventListener('pointerdown', (e) => { if (!e.target.closest('.music')) setPan
 addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
 $('#musicPlay').onclick = () => { music.toggle(); musicPrefs.on = music.state().playing; store.set('sq-music', { ...musicPrefs, volume: music.state().volume, track: music.state().index }); };
 $('#musicIn').onchange = (e) => music.setMuted(!e.target.checked);
+$('#homeMute').onclick = () => music.setMuted(!music.state().muted);
 $('#trackPrev').onclick = () => music.skip(-1);
 $('#trackNext').onclick = () => music.skip(1);
 $('#musicVol').oninput = (e) => music.setVolume(+e.target.value / 100);
