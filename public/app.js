@@ -877,6 +877,7 @@ function readSettings() {
     difficulty: q('difficulty').value, chaos: preset === 'classic' ? 'off' : q('chaos').value,
     chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
+  out.chaosIds = [...$('#overlay').querySelectorAll('.chaos-list input:checked')].map((el) => el.value);
   if (q('customWords')) out.customWords = q('customWords').value;
   return out;
 }
@@ -884,6 +885,11 @@ const pushSettings = () => {
   clearTimeout(wordsT); wordsT = null;
   if (S?.state === 'lobby' && $('#overlay [name=preset]')) send('settings', { settings: readSettings() });
 };
+
+function setAllChaos(on) {
+  for (const el of $('#overlay').querySelectorAll('.chaos-list input')) el.checked = on;
+  pushSettings();
+}
 
 function buildLobby() {
   const host = S.hostId === myId;
@@ -904,8 +910,14 @@ function buildLobby() {
       h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), select('difficulty', Object.keys(DIFFICULTIES), (v) => DIFFICULTIES[v])),
       h('label', { class: 'field', id: 'chaosFrequency' }, h('span', { text: 'Chaos turns' }), select('chaos', ['some', 'always'], (v) => CHAOS_OPTS[v]))),
     h('details', { class: 'custom chaos-list' },
-      h('summary', { text: 'Challenges' }),
-      h('ul', {}, CHAOS_MODES.map((c) => h('li', {}, h('b', { text: c.name }), h('small', { text: `${c.target === 'artist' ? 'Artist' : 'Guessers'}. ${c.desc}` }))))),
+      h('summary', { name: 'chaosSum' }),
+      h('div', { class: 'chaos-bulk' },
+        h('button', { type: 'button', class: 'btn', name: 'chaosAll', text: 'Select all', onclick: () => setAllChaos(true) }),
+        h('button', { type: 'button', class: 'btn', name: 'chaosNone', text: 'Clear', onclick: () => setAllChaos(false) }),
+        h('small', { name: 'chaosWarn', text: 'Nothing selected: turns will be plain.', hidden: true })),
+      h('ul', {}, CHAOS_MODES.map((c) => h('li', {}, h('label', {},
+        h('input', { type: 'checkbox', value: c.id, onchange: pushSettings }),
+        h('span', {}, h('b', { text: `${c.icon} ${c.name}` }), h('small', { text: `${c.target === 'artist' ? 'Artist' : 'Guessers'}. ${c.desc}` }))))))),
     h('details', { class: 'custom' },
       h('summary', { name: 'customSum' }),
       host ? h('textarea', { name: 'customWords', placeholder: 'inside jokes, friends’ names, comma separated…', maxLength: 6000,
@@ -929,6 +941,14 @@ function syncLobby() {
     sel.disabled = !host;
   }
   $('#chaosFrequency').hidden = s.chaos === 'off';
+  const picked = new Set(s.chaosIds || CHAOS_MODES.map((c) => c.id));
+  for (const el of $('#overlay').querySelectorAll('.chaos-list input')) {
+    if (el !== active) el.checked = picked.has(el.value);
+    el.disabled = !host;
+  }
+  q('chaosAll').disabled = q('chaosNone').disabled = !host;
+  q('chaosSum').textContent = `🌀 Challenges (${picked.size} of ${CHAOS_MODES.length})`;
+  q('chaosWarn').hidden = picked.size > 0;
   q('customOnly').checked = !!s.customOnly;
   q('customOnly').disabled = !host;
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;

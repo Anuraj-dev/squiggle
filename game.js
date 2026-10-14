@@ -5,7 +5,7 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  CHAOS_LEVELS, CHAOS_POOLS, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
+  CHAOS_LEVELS, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
   stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
@@ -19,7 +19,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'some', chaosPool: 'mixed', wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'some', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
@@ -279,17 +279,21 @@ export class Room {
     this.guesserChaos = null;
     if (this.settings.chaos === 'off' || (this.settings.chaos === 'some' && Math.random() >= 0.5)) return;
     const seed = () => (Math.random() * 0xffffffff) >>> 0;
-    const pool = this.settings.chaosPool;
+    const { chaosPool: pool, chaosIds: ids } = this.settings;
+    const has = (target, mild) => CHAOS_MODES.some((t) => t.target === target && (!mild || t.mild) && ids.includes(t.id));
     // A paired turn keeps the guesser side mild so the artist can still get a full challenge.
-    const both = pool === 'mixed' && Math.random() < 0.35;
-    const target = pool === 'mixed' ? (Math.random() < 0.5 ? 'artist' : 'guesser') : pool;
+    const both = pool === 'mixed' && Math.random() < 0.35 && has('artist') && has('guesser', true);
+    let target = pool === 'mixed' ? (Math.random() < 0.5 ? 'artist' : 'guesser') : pool;
+    // In Mixed, the host may have enabled challenges for one side only.
+    if (!both && pool === 'mixed' && !has(target)) target = target === 'artist' ? 'guesser' : 'artist';
+    if (!both && !has(target)) return;
     if (both || target === 'artist') {
-      this.chaos = pickChaos(seed(), this.lastChaosId, 'artist');
-      this.lastChaosId = this.chaos.id;
+      this.chaos = pickChaos(seed(), this.lastChaosId, 'artist', false, ids);
+      if (this.chaos) this.lastChaosId = this.chaos.id;
     }
     if (both || target === 'guesser') {
-      this.guesserChaos = pickChaos(seed(), this.lastGuesserChaosId, 'guesser', both);
-      this.lastGuesserChaosId = this.guesserChaos.id;
+      this.guesserChaos = pickChaos(seed(), this.lastGuesserChaosId, 'guesser', both, ids);
+      if (this.guesserChaos) this.lastGuesserChaosId = this.guesserChaos.id;
     }
   }
 
@@ -756,6 +760,7 @@ const handlers = {
       drawTime: clamp(s.drawTime, 20, 240, DEFAULTS.drawTime),
       chaos: CHAOS_LEVELS.includes(s.chaos) ? s.chaos : s.chaos === true ? 'always' : 'off',
       chaosPool: CHAOS_POOLS.includes(s.chaosPool) ? s.chaosPool : DEFAULTS.chaosPool,
+      chaosIds: s.chaosIds == null ? room.settings.chaosIds : cleanChaosIds(s.chaosIds),
       wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),
       hints: clamp(s.hints, 0, 5, DEFAULTS.hints),
       difficulty: DIFFICULTIES.includes(s.difficulty) ? s.difficulty : 'mix',
@@ -780,8 +785,10 @@ const handlers = {
   },
   rescue(room, p, m) {
     if (p.id !== room.drawerId || room.state !== 'choosing' || m.seq !== room.turnSeq || p.rescued || !room.chaos || room.pausedAt || room.pastDeadline()) return;
-    room.chaos = pickChaos((Math.random() * 0xffffffff) >>> 0, room.chaos.id, 'artist');
-    room.lastChaosId = room.chaos.id;
+    const next = pickChaos((Math.random() * 0xffffffff) >>> 0, room.chaos.id, 'artist', false, room.settings.chaosIds);
+    if (!next || next.id === room.chaos.id) return room.send(p, 'toast', { text: 'No other challenge to swap in.' });
+    room.chaos = next;
+    room.lastChaosId = next.id;
     p.rescued = true;
     room.sync();
   },

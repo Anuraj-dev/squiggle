@@ -65,9 +65,23 @@ export const LAG_MS = 4000, MEMORY_STROKES = 4;
 // Saturated inks for One Color / Mystery Ink.
 export const INKS = ['#e8322a', '#ff7a2f', '#1f9d55', '#2ec4d6', '#3d7bff', '#9b6bff', '#ff4fa3', '#8a4b2a'];
 
-export function pickChaos(seed, prevId, target, mild = false) {
-  const pool = CHAOS_MODES.filter((t) => t.id !== prevId && (!target || t.target === target) && (!mild || t.mild));
-  return { ...pool[seed % pool.length], seed };
+export const CHAOS_IDS = CHAOS_MODES.map((t) => t.id);
+
+// The host's chosen challenges: known ids only, in canonical order. Anything
+// that is not a list means "keep every challenge".
+export function cleanChaosIds(list) {
+  if (!Array.isArray(list)) return CHAOS_IDS;
+  const want = new Set(list);
+  return CHAOS_IDS.filter((id) => want.has(id));
+}
+
+// `allowed` is the host's id list (null = every challenge). Returns null when
+// nothing qualifies. Avoids repeating prevId unless it is the only option.
+export function pickChaos(seed, prevId, target, mild = false, allowed = null) {
+  const ok = (t) => (!allowed || allowed.includes(t.id)) && (!target || t.target === target) && (!mild || t.mild);
+  let pool = CHAOS_MODES.filter((t) => ok(t) && t.id !== prevId);
+  if (!pool.length) pool = CHAOS_MODES.filter(ok);
+  return pool.length ? { ...pool[seed % pool.length], seed } : null;
 }
 
 // Guesser relief: challenge effects stay full until FADE_FROM of the turn, then fade to 0 at RELIEF_AT.
