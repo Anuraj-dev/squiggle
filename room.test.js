@@ -867,3 +867,63 @@ test('reactions: dislike is allowed and broadcast to everyone, unknown emoji are
   guesser.act('react', { e: '🤮' });
   expect(seen(guesser)).toEqual(['👎']);
 });
+
+test('redo restores the sender’s last undone stroke; a new stroke, clear or locked chaos stops it', () => {
+  const ctx = setup(2);
+  const { drawer } = startDrawing(ctx);
+  const ids = () => ctx.room.strokes.map((s) => s.id.split(':')[1]);
+  for (const id of ['a', 'b', 'c']) { drawer.act('stroke', { s: pen(id, [1, 1, 5, 5]) }); advance(300); }
+  const coords = ctx.room.coordCount;
+  drawer.act('undo'); drawer.act('undo');
+  expect(ids()).toEqual(['a']);
+  const g = ctx.ss.find((s) => s !== drawer);
+  const i = g.mark();
+  drawer.act('redo');
+  expect(ids()).toEqual(['a', 'b']);
+  expect(g.since(i, 'stroke')[0].s.id).toBe(`${drawer.id}:b`);
+  drawer.act('redo');
+  expect(ids()).toEqual(['a', 'b', 'c']);
+  expect(ctx.room.coordCount).toBe(coords);
+  drawer.act('redo'); // nothing left
+  expect(ids()).toEqual(['a', 'b', 'c']);
+  // Drawing something new forks history: the old redo stack is gone.
+  drawer.act('undo');
+  drawer.act('stroke', { s: pen('d', [2, 2]) });
+  drawer.act('redo');
+  expect(ids()).toEqual(['a', 'b', 'd']);
+  // Clear drops it too.
+  drawer.act('undo'); drawer.act('clear'); drawer.act('redo');
+  expect(ctx.room.strokes).toEqual([]);
+  // Guessers cannot redo on the artist's canvas.
+  drawer.act('stroke', { s: pen('e', [3, 3]) }); drawer.act('undo');
+  g.act('redo');
+  expect(ctx.room.strokes).toEqual([]);
+});
+
+test('redo does not refund or spend Five Strokes budget and respects locked chaos', () => {
+  const ctx = setup(2);
+  const { drawer } = startDrawing(ctx);
+  ctx.room.chaos = tw('fivestrokes');
+  drawer.act('stroke', { s: pen('p1', [1, 1]) });
+  advance(300);
+  drawer.act('undo');
+  const used = ctx.room.strokeUsed;
+  drawer.act('redo');
+  expect(ctx.room.strokes.length).toBe(1);
+  expect(ctx.room.strokeUsed).toBe(used);
+  drawer.act('undo');
+  ctx.room.chaos = tw('permanent');
+  drawer.act('redo');
+  expect(ctx.room.strokes).toEqual([]);
+  expect(drawer.since(0, 'draw-reject').at(-1).reason).toBe('locked');
+});
+
+test('redo in the lobby is per player', () => {
+  const ctx = setup(2);
+  const [a, b] = ctx.ss;
+  a.act('stroke', { s: pen('x', [10, 10]) });
+  b.act('stroke', { s: pen('y', [20, 20]) });
+  a.act('undo'); b.act('undo');
+  a.act('redo');
+  expect(ctx.room.strokes.map((s) => s.id)).toEqual([`${a.id}:x`]);
+});
