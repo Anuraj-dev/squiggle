@@ -5,7 +5,7 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  CHAOS_LEVELS, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
+  CHAOS_LEVELS, CHAOS_RATE, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
   stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
@@ -19,7 +19,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'some', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
@@ -277,7 +277,8 @@ export class Room {
   rollChaos() {
     this.chaos = null;
     this.guesserChaos = null;
-    if (this.settings.chaos === 'off' || (this.settings.chaos === 'some' && Math.random() >= 0.5)) return;
+    const rate = CHAOS_RATE[this.settings.chaos];
+    if (!rate || (rate < 1 && Math.random() >= rate)) return;
     const seed = () => (Math.random() * 0xffffffff) >>> 0;
     const { chaosPool: pool, chaosIds: ids } = this.settings;
     const has = (target, mild) => CHAOS_MODES.some((t) => t.target === target && (!mild || t.mild) && ids.includes(t.id));
@@ -758,7 +759,7 @@ const handlers = {
     room.settings = {
       rounds: clamp(s.rounds, 1, 10, DEFAULTS.rounds),
       drawTime: clamp(s.drawTime, 20, 240, DEFAULTS.drawTime),
-      chaos: CHAOS_LEVELS.includes(s.chaos) ? s.chaos : s.chaos === true ? 'always' : 'off',
+      chaos: CHAOS_LEVELS.includes(s.chaos) ? s.chaos : s.chaos === true ? 'x4' : 'off',
       chaosPool: CHAOS_POOLS.includes(s.chaosPool) ? s.chaosPool : DEFAULTS.chaosPool,
       chaosIds: s.chaosIds == null ? room.settings.chaosIds : cleanChaosIds(s.chaosIds),
       wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),

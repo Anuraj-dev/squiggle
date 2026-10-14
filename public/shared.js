@@ -59,7 +59,9 @@ export const CHAOS_MODES = [
   { id: 'limited', icon: '🎯', name: 'Limited Guesses', desc: 'Three attempts. One returns every four seconds. Typos are free.', view: true },
 ].map((mode) => ({ ...mode, target: mode.view || mode.id === 'nohints' ? 'guesser' : 'artist',
   mild: mode.mild || ['tiny', 'rainbow', 'onecolor', 'dotted'].includes(mode.id) }));
-export const CHAOS_LEVELS = ['off', 'some', 'always'];
+// Chaos rate: chance a turn is a chaos turn. 1x is the baseline (about 1 turn in 4); each step multiplies it, so 4x is every turn.
+export const CHAOS_RATE = { x1: 0.25, x2: 0.5, x3: 0.75, x4: 1 };
+export const CHAOS_LEVELS = ['off', ...Object.keys(CHAOS_RATE)];
 export const CHAOS_POOLS = ['artist', 'guesser', 'mixed'];
 export const LAG_MS = 4000, MEMORY_STROKES = 4;
 // Saturated inks for One Color / Mystery Ink.
