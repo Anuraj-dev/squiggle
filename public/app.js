@@ -870,7 +870,7 @@ const TIMES = [30, 40, 60, 80, 100, 120, 150, 180, 240];
 const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
-const CHAOS_OPTS = { off: 'Off', some: 'Sometimes', always: 'Every turn' };
+const CHAOS_OPTS = { off: 'Off', always: 'Every turn', every2: 'Every 2nd turn', every3: 'Every 3rd turn', every4: 'Every 4th turn' };
 const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
 const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
 let wordsT = null;
@@ -913,7 +913,7 @@ function buildLobby() {
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
       h('label', { class: 'field' }, h('span', { text: 'Hints' }), select('hints', HINT_COUNTS, (v) => (v ? `${v} letter${v > 1 ? 's' : ''}` : 'None'))),
       h('label', { class: 'field' }, h('span', { text: 'Difficulty' }), select('difficulty', Object.keys(DIFFICULTIES), (v) => DIFFICULTIES[v])),
-      h('label', { class: 'field', id: 'chaosFrequency' }, h('span', { text: 'Chaos turns' }), select('chaos', ['some', 'always'], (v) => CHAOS_OPTS[v]))),
+      h('label', { class: 'field', id: 'chaosFrequency' }, h('span', { text: 'Chaos frequency' }), select('chaos', ['always', 'every2', 'every3', 'every4'], (v) => CHAOS_OPTS[v]))),
     h('details', { class: 'custom chaos-list' },
       h('summary', { name: 'chaosSum' }),
       h('div', { class: 'chaos-bulk' },

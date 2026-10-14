@@ -438,10 +438,10 @@ test('choosing times out to a random pick under the fake clock', () => {
   expect(ctx.room.state).toBe('drawing');
 });
 
-test('chaos: "some" by default, "off" never rolls, artist pool never repeats the previous challenge', () => {
+test('chaos: every 2nd turn by default, "off" never rolls, artist pool never repeats the previous challenge', () => {
   // A fresh room (no settings message yet) uses DEFAULTS.
   const host = sock('Host'); host.do('join', { name: 'H' });
-  expect(rooms.get(host.out.find((m) => m.t === 'welcome').code).settings.chaos).toBe('some');
+  expect(rooms.get(host.out.find((m) => m.t === 'welcome').code).settings.chaos).toBe('every2');
   const off = setup(2, { chaos: 'off' });
   startDrawing(off);
   expect(off.room.chaos).toBeNull();
@@ -838,4 +838,22 @@ test('only the host in the lobby can change the challenge list; unknown ids are 
   ctx.ss[0].do('settings', { settings: { rounds: 2 } });
   expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
   expect(ctx.ss[1].state().settings.chaosIds).toEqual(['mirror', 'fog']);
+});
+
+test('chaos frequency: every Nth turn gets chaos, counting restarts with each game, bad levels turn it off', () => {
+  const pattern = (level, turns) => {
+    const ctx = setup(2, { chaos: level, chaosPool: 'artist' });
+    return Array.from({ length: turns }, () => { ctx.room.rollChaos(); return !!ctx.room.chaos; });
+  };
+  expect(pattern('always', 4)).toEqual([true, true, true, true]);
+  expect(pattern('every2', 6)).toEqual([false, true, false, true, false, true]);
+  expect(pattern('every3', 6)).toEqual([false, false, true, false, false, true]);
+  expect(pattern('every4', 8)).toEqual([false, false, false, true, false, false, false, true]);
+  expect(pattern('off', 4)).toEqual([false, false, false, false]);
+  expect(pattern('some', 4)).toEqual([false, false, false, false]);
+  const ctx = setup(2, { chaos: 'every3', chaosPool: 'artist', customWords: 'cat, dog, cow' });
+  ctx.room.chaosTurn = 2;
+  ctx.ss[0].do('start');
+  expect(ctx.room.chaosTurn).toBe(1);
+  expect(ctx.room.chaos).toBeNull();
 });

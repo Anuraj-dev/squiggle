@@ -5,7 +5,7 @@ import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
-  CHAOS_LEVELS, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
+  CHAOS_LEVELS, CHAOS_EVERY, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
   stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
@@ -19,7 +19,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'some', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'every2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
@@ -84,6 +84,7 @@ export class Room {
     this.guesserChaos = null;
     this.lastChaosId = null;
     this.lastGuesserChaosId = null;
+    this.chaosTurn = 0;
     this.inkUsed = 0;
     this.strokeUsed = 0;
     this.guessBudgets = new Map();
@@ -277,7 +278,8 @@ export class Room {
   rollChaos() {
     this.chaos = null;
     this.guesserChaos = null;
-    if (this.settings.chaos === 'off' || (this.settings.chaos === 'some' && Math.random() >= 0.5)) return;
+    const every = CHAOS_EVERY[this.settings.chaos];
+    if (!every || ++this.chaosTurn % every) return;
     const seed = () => (Math.random() * 0xffffffff) >>> 0;
     const { chaosPool: pool, chaosIds: ids } = this.settings;
     const has = (target, mild) => CHAOS_MODES.some((t) => t.target === target && (!mild || t.mild) && ids.includes(t.id));
@@ -392,6 +394,7 @@ export class Room {
     for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false });
     this.gallery = [];
     this.used.clear();
+    this.chaosTurn = 0;
     this.round = 0;
     this.chaos = null;
     this.nextRound();

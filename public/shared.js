@@ -59,7 +59,9 @@ export const CHAOS_MODES = [
   { id: 'limited', icon: '🎯', name: 'Limited Guesses', desc: 'Three attempts. One returns every four seconds. Typos are free.', view: true },
 ].map((mode) => ({ ...mode, target: mode.view || mode.id === 'nohints' ? 'guesser' : 'artist',
   mild: mode.mild || ['tiny', 'rainbow', 'onecolor', 'dotted'].includes(mode.id) }));
-export const CHAOS_LEVELS = ['off', 'some', 'always'];
+// Chaos cadence: a chaos turn lands on every Nth turn of the game (1 = every turn).
+export const CHAOS_EVERY = { always: 1, every2: 2, every3: 3, every4: 4 };
+export const CHAOS_LEVELS = ['off', ...Object.keys(CHAOS_EVERY)];
 export const CHAOS_POOLS = ['artist', 'guesser', 'mixed'];
 export const LAG_MS = 4000, MEMORY_STROKES = 4;
 // Saturated inks for One Color / Mystery Ink.
