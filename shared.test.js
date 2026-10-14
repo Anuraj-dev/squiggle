@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import {
   W, H, GALLERY_COORDS, CHAOS_MODES,
-  validateStroke, strokeId, applyChaos, pickChaos,
+  validateStroke, strokeId, applyChaos, pickChaos, cleanChaosIds, CHAOS_IDS,
   guesserPts, drawerPts, allBonus, scoreMult, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
   inkCost, trimInk, turnProgress, viewStrength, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
@@ -260,4 +260,23 @@ test('gallery keeps every stroke and its true endpoint within a bounded budget',
   expect(kept.reduce((n, s) => n + s.pts.length, 0)).toBeLessThan(GALLERY_COORDS * 2.5);
   const small = [{ id: 'a', tool: 'pen', pts: [1, 2, 3, 4] }];
   expect(galleryStrokes(small)).toBe(small);
+});
+
+test('pickChaos honours the host list, repeats only when forced, and returns null when empty', () => {
+  const allowed = ['mirror', 'fog', 'quake'];
+  for (let seed = 0; seed < 40; seed++) {
+    expect(allowed).toContain(pickChaos(seed, null, null, false, allowed).id);
+    expect(pickChaos(seed, 'mirror', 'artist', false, allowed).id).toBe('mirror');
+    expect(pickChaos(seed, 'fog', 'guesser', false, allowed).id).toBe('quake');
+  }
+  expect(pickChaos(1, null, 'artist', false, ['fog'])).toBeNull();
+  expect(pickChaos(1, null, 'guesser', true, ['fog'])).toBeNull();
+  expect(pickChaos(1, null, 'artist', false, [])).toBeNull();
+});
+
+test('cleanChaosIds keeps known ids in canonical order and treats non-lists as everything', () => {
+  expect(cleanChaosIds(['fog', 'nope', 'mirror', 'fog'])).toEqual(['mirror', 'fog']);
+  expect(cleanChaosIds([])).toEqual([]);
+  expect(cleanChaosIds(undefined)).toEqual(CHAOS_IDS);
+  expect(cleanChaosIds('fog')).toEqual(CHAOS_IDS);
 });

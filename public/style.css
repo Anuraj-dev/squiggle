@@ -473,7 +473,13 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .lobby .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem 0.8rem; }
 @media (max-width: 560px) { .lobby .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chaos-list ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.35rem 0.8rem; max-height: 220px; overflow-y: auto; }
-.chaos-list li { display: flex; flex-direction: column; font-size: 0.85rem; }
+.chaos-list li { font-size: 0.85rem; }
+.chaos-list label { display: flex; gap: 0.5rem; align-items: flex-start; cursor: pointer; }
+.chaos-list input { width: 18px; height: 18px; margin-top: 0.15rem; flex: none; accent-color: var(--grape); }
+.chaos-list label span { display: flex; flex-direction: column; }
+.chaos-bulk { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.4rem 0 0.6rem; }
+.chaos-bulk .btn { padding: 0.25rem 0.7rem; font-size: 0.85rem; }
+.chaos-bulk small { color: var(--tomato); font-weight: 700; }
 .chaos-list li small { color: var(--ink-2); }
 .tgroup.pal.locked { opacity: 0.35; pointer-events: none; }
 

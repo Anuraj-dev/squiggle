@@ -805,3 +805,37 @@ test('limited attempt replenishment and relief share unpaused time and reject st
   expect(g.out.at(-1)).toMatchObject({ t: 'guess-result', accepted: true });
   expect(c.room.guessBudget(p).remaining).toBe(3);
 });
+
+test('host-picked challenges: only they roll, one-sided picks follow the preset, none means plain turns', () => {
+  const roll = (settings, n = 60) => {
+    const ctx = setup(2, { chaos: 'always', ...settings });
+    const seen = { artist: new Set(), guesser: new Set() };
+    for (let i = 0; i < n; i++) {
+      ctx.room.rollChaos();
+      if (ctx.room.chaos) seen.artist.add(ctx.room.chaos.id);
+      if (ctx.room.guesserChaos) seen.guesser.add(ctx.room.guesserChaos.id);
+    }
+    return seen;
+  };
+  const picked = roll({ chaosIds: ['mirror', 'upside', 'fog', 'batches'] });
+  expect([...picked.artist].every((id) => ['mirror', 'upside'].includes(id))).toBe(true);
+  expect([...picked.guesser].every((id) => ['fog', 'batches'].includes(id))).toBe(true);
+  expect(picked.artist.size + picked.guesser.size).toBe(4);
+  // Mixed with artist-only picks never yields a guesser challenge.
+  expect(roll({ chaosIds: ['mirror'] }).guesser.size).toBe(0);
+  // Artist preset with only guesser picks stays plain instead of switching sides.
+  const strict = roll({ chaosPool: 'artist', chaosIds: ['fog'] });
+  expect(strict.artist.size + strict.guesser.size).toBe(0);
+  const none = roll({ chaosIds: [] });
+  expect(none.artist.size + none.guesser.size).toBe(0);
+});
+
+test('only the host in the lobby can change the challenge list; unknown ids are dropped; omitting it keeps it', () => {
+  const ctx = setup(2, { chaosIds: ['mirror', 'bogus', 'fog'] });
+  expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
+  ctx.ss[1].do('settings', { settings: { chaosIds: [] } });
+  expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
+  ctx.ss[0].do('settings', { settings: { rounds: 2 } });
+  expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
+  expect(ctx.ss[1].state().settings.chaosIds).toEqual(['mirror', 'fog']);
+});
