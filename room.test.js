@@ -855,3 +855,15 @@ test('chaos rate: 1x-4x scale the share of chaos turns, 4x is every turn, off an
   expect(x2).toBeGreaterThan(0.4); expect(x2).toBeLessThan(0.6);
   expect(x3).toBeGreaterThan(0.65); expect(x3).toBeLessThan(0.85);
 });
+
+test('reactions: dislike is allowed and broadcast to everyone, unknown emoji are dropped', () => {
+  const ctx = setup(3);
+  startDrawing(ctx);
+  const guesser = ctx.ss.find((s) => s.id !== ctx.room.drawerId);
+  const seen = (s) => s.out.filter((m) => m.t === 'react').map((m) => m.e);
+  guesser.act('react', { e: '👎' });
+  for (const s of ctx.ss) expect(seen(s)).toEqual(['👎']);
+  advance(300);
+  guesser.act('react', { e: '🤮' });
+  expect(seen(guesser)).toEqual(['👎']);
+});

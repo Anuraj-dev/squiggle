@@ -33,7 +33,7 @@ const AV_COLORS = ['#ffc93c', '#ff8a6b', '#7fe0b5', '#8fb3ff', '#c8a8ff', '#ff9f
 const PALETTE = ['#1d1b1a', '#8a847c', '#ffffff', '#e8322a', '#ff7a2f', '#ffc93c', '#8bd346', '#1f9d55',
   '#2ec4d6', '#3d7bff', '#9b6bff', '#ff7fbf', '#8a4b2a', '#ffd7b5'];
 const SIZES = [4, 10, 22, 44];
-const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
+const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏', '👎'];
 const ICONS = {
   circle: '<circle cx="12" cy="12" r="8"/>',
   triangle: '<path d="M12 4L21 20H3Z"/>',
