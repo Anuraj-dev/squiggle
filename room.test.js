@@ -438,15 +438,15 @@ test('choosing times out to a random pick under the fake clock', () => {
   expect(ctx.room.state).toBe('drawing');
 });
 
-test('chaos: every 2nd turn by default, "off" never rolls, artist pool never repeats the previous challenge', () => {
+test('chaos: 2x rate by default, "off" never rolls, artist pool never repeats the previous challenge', () => {
   // A fresh room (no settings message yet) uses DEFAULTS.
   const host = sock('Host'); host.do('join', { name: 'H' });
-  expect(rooms.get(host.out.find((m) => m.t === 'welcome').code).settings.chaos).toBe('every2');
+  expect(rooms.get(host.out.find((m) => m.t === 'welcome').code).settings.chaos).toBe('x2');
   const off = setup(2, { chaos: 'off' });
   startDrawing(off);
   expect(off.room.chaos).toBeNull();
   expect(off.room.guesserChaos).toBeNull();
-  const ctx = setup(2, { chaos: true, chaosPool: 'artist', rounds: 5, customWords: 'cat, dog, cow' });
+  const ctx = setup(2, { chaos: 'x4', chaosPool: 'artist', rounds: 5, customWords: 'cat, dog, cow' });
   ctx.ss[0].do('start');
   let prev = null;
   for (let turn = 0; turn < 8; turn++) {
@@ -463,7 +463,7 @@ test('chaos: every 2nd turn by default, "off" never rolls, artist pool never rep
 });
 
 test('speedrun halves the turn; clear wipes the canvas; blank turns skip the gallery', () => {
-  const ctx = setup(2, { chaos: true });
+  const ctx = setup(2, { chaos: 'x4' });
   ctx.ss[0].do('start');
   ctx.room.chaos = tw('speed'); ctx.room.guesserChaos = null;
   const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
@@ -482,9 +482,9 @@ test('speedrun halves the turn; clear wipes the canvas; blank turns skip the gal
 });
 
 test('host settings: word choices, hints, difficulty and chaos level', () => {
-  const ctx = setup(2, { customOnly: false, customWords: '', wordChoices: 5, hints: 4, difficulty: 'hard', chaos: 'always' });
+  const ctx = setup(2, { customOnly: false, customWords: '', wordChoices: 5, hints: 4, difficulty: 'hard', chaos: 'x4' });
   const s = ctx.room.settings;
-  expect([s.wordChoices, s.hints, s.difficulty, s.chaos]).toEqual([5, 4, 'hard', 'always']);
+  expect([s.wordChoices, s.hints, s.difficulty, s.chaos]).toEqual([5, 4, 'hard', 'x4']);
   ctx.ss[0].do('start');
   const drawer = ctx.ss.find((x) => x.id === ctx.room.drawerId);
   expect(drawer.state().choices.length).toBe(5);
@@ -591,7 +591,7 @@ test('a speedup advances mystery length relief for every remaining guesser', () 
 });
 
 test('rescue is artist-only, once per match, and survives reconnect', () => {
-  const ctx = setup(2, { chaos: 'always', chaosPool: 'artist' });
+  const ctx = setup(2, { chaos: 'x4', chaosPool: 'artist' });
   ctx.ss[0].do('start');
   const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId), other = ctx.ss.find((s) => s !== drawer);
   const original = ctx.room.chaos.id, deadline = ctx.room.deadline;
@@ -625,7 +625,7 @@ test('rescue is artist-only, once per match, and survives reconnect', () => {
 });
 
 test('presets use separate pools; mixed pairs 35% of turns with a mild guesser side', () => {
-  const ctx = setup(2, { chaos: 'always' });
+  const ctx = setup(2, { chaos: 'x4' });
   const rng = spyOn(Math, 'random');
   try {
     for (const target of ['artist', 'guesser']) {
@@ -808,7 +808,7 @@ test('limited attempt replenishment and relief share unpaused time and reject st
 
 test('host-picked challenges: only they roll, one-sided picks follow the preset, none means plain turns', () => {
   const roll = (settings, n = 60) => {
-    const ctx = setup(2, { chaos: 'always', ...settings });
+    const ctx = setup(2, { chaos: 'x4', ...settings });
     const seen = { artist: new Set(), guesser: new Set() };
     for (let i = 0; i < n; i++) {
       ctx.room.rollChaos();
@@ -840,20 +840,18 @@ test('only the host in the lobby can change the challenge list; unknown ids are 
   expect(ctx.ss[1].state().settings.chaosIds).toEqual(['mirror', 'fog']);
 });
 
-test('chaos frequency: every Nth turn gets chaos, counting restarts with each game, bad levels turn it off', () => {
-  const pattern = (level, turns) => {
+test('chaos rate: 1x-4x scale the share of chaos turns, 4x is every turn, off and unknown levels never roll', () => {
+  const share = (level, turns = 400) => {
     const ctx = setup(2, { chaos: level, chaosPool: 'artist' });
-    return Array.from({ length: turns }, () => { ctx.room.rollChaos(); return !!ctx.room.chaos; });
+    let hits = 0;
+    for (let i = 0; i < turns; i++) { ctx.room.rollChaos(); if (ctx.room.chaos) hits++; }
+    return hits / turns;
   };
-  expect(pattern('always', 4)).toEqual([true, true, true, true]);
-  expect(pattern('every2', 6)).toEqual([false, true, false, true, false, true]);
-  expect(pattern('every3', 6)).toEqual([false, false, true, false, false, true]);
-  expect(pattern('every4', 8)).toEqual([false, false, false, true, false, false, false, true]);
-  expect(pattern('off', 4)).toEqual([false, false, false, false]);
-  expect(pattern('some', 4)).toEqual([false, false, false, false]);
-  const ctx = setup(2, { chaos: 'every3', chaosPool: 'artist', customWords: 'cat, dog, cow' });
-  ctx.room.chaosTurn = 2;
-  ctx.ss[0].do('start');
-  expect(ctx.room.chaosTurn).toBe(1);
-  expect(ctx.room.chaos).toBeNull();
+  expect(share('x4')).toBe(1);
+  expect(share('off')).toBe(0);
+  expect(share('some')).toBe(0);
+  const [x1, x2, x3] = [share('x1'), share('x2'), share('x3')];
+  expect(x1).toBeGreaterThan(0.15); expect(x1).toBeLessThan(0.35);
+  expect(x2).toBeGreaterThan(0.4); expect(x2).toBeLessThan(0.6);
+  expect(x3).toBeGreaterThan(0.65); expect(x3).toBeLessThan(0.85);
 });

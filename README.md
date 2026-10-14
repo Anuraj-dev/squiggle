@@ -6,7 +6,7 @@ A multiplayer drawing and guessing game for friends. Create a room, share the in
 - 39 optional challenges for artists and guessers, including stamps, puzzle tiles and replenishing guess attempts
 - Classic, Artist Chaos, Guesser Chaos and Mixed Chaos presets
 - One artist challenge swap per player per match, with a challenge recap after each turn
-- The host picks rounds, draw time, word choices, hints, difficulty and how often chaos happens (every turn, or every 2nd, 3rd or 4th turn)
+- The host picks rounds, draw time, word choices, hints, difficulty and how often chaos happens (a 1x to 4x chaos rate)
 - Calm procedural background music with player controls
 
 ## Requirements
