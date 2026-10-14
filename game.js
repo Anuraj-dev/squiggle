@@ -23,7 +23,7 @@ const DEFAULTS = {
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏', '👎'];
-const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'clear']);
+const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'redo', 'clear']);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DIFFS = ['easy', 'medium', 'hard'];
 const DIFFICULTIES = ['mix', ...DIFFS];
@@ -117,6 +117,7 @@ export class Room {
   resetCanvas(publish = true) {
     this.strokes = [];
     this.coordCount = 0;
+    this.redoStacks = new Map(); // playerId -> strokes they undid, newest last
     if (publish) this.publishedStrokes = [];
   }
 
@@ -834,6 +835,7 @@ const handlers = {
     if (!lobby) out = applyChaos(out, room.chaos);
     room.coordCount += pts.length;
     room.strokes.push(out);
+    room.redoStacks.delete(p.id);
     room.strokeUsed++;
     room.inkUsed += cost;
     room.broadcastDraw('stroke', { s: out, seq: room.turnSeq });
@@ -869,7 +871,21 @@ const handlers = {
     if (idx < 0) return;
     const [s] = room.strokes.splice(idx, 1);
     room.coordCount -= s.pts.length;
+    if (!room.redoStacks.has(p.id)) room.redoStacks.set(p.id, []);
+    room.redoStacks.get(p.id).push(s);
     room.broadcastDraw('undo', { id: s.id, seq: room.turnSeq });
+  },
+  // Restores the sender's last undone stroke. Undo never refunded stroke or ink
+  // budgets, so redo charges nothing; a fresh stroke or clear drops the stack.
+  redo(room, p, m) {
+    if (!room.drawGate(p, m)) return;
+    if (room.state === 'drawing' && !canUndo(room.chaos)) return room.rejectDraw(p, 'locked');
+    const s = room.redoStacks.get(p.id)?.pop();
+    if (!s) return;
+    if (room.strokes.length >= MAX_STROKES || room.coordCount + s.pts.length > MAX_TURN_COORDS) return room.rejectDraw(p, 'budget', s.id);
+    room.coordCount += s.pts.length;
+    room.strokes.push(s);
+    room.broadcastDraw('stroke', { s, seq: room.turnSeq });
   },
   clear(room, p, m) {
     const lobby = room.state === 'lobby';

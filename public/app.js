@@ -47,6 +47,7 @@ const ICONS = {
   rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
   ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>',
+  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/>',
   trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   skip: '<path d="M5 5l9 7-9 7z"/><path d="M18 5v14"/>',
 };
@@ -608,7 +609,9 @@ addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select') || document.querySelector('dialog[open]')) return;
   if (S?.state === 'choosing' && S.choices && /^[1-5]$/.test(e.key)) { act('choose', { i: +e.key - 1 }); return; }
   if (!canDraw()) return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (canUndo(turnChaos())) act('undo'); return; }
+  const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  if (mod && k === 'z') { e.preventDefault(); if (canUndo(turnChaos())) act(e.shiftKey ? 'redo' : 'undo'); return; }
+  if (mod && k === 'y') { e.preventDefault(); if (canUndo(turnChaos())) act('redo'); return; }
   const map = { b: 'pen', p: 'pen', e: 'eraser', f: 'fill', g: 'fill', l: 'line', r: 'rect', o: 'ellipse' };
   if (map[e.key] && !e.ctrlKey && !e.metaKey) { tool = map[e.key]; renderToolbar(); }
   if (e.key === '[' || e.key === ']') {
@@ -996,6 +999,7 @@ function renderToolbar() {
         : tools.map(([t, l]) => tb(t, l, active === t, () => { tool = t; renderToolbar(); }, !allowedTool(tw, t))),
       h('span', { class: 'tdiv' }),
       tb('undo', 'Undo (Ctrl+Z)', false, () => act('undo'), locked),
+      tb('redo', 'Redo (Ctrl+Shift+Z)', false, () => act('redo'), locked),
       lobby ? (host ? tb('trash', 'Clear', false, () => act('clear')) : null)
         : tb('trash', 'Clear canvas', false, () => confirmAction('Clear the whole canvas?', 'Clear', () => act('clear')), locked),
       !lobby && !solved ? tb('skip', 'Skip this word', false, () => confirmAction('Skip your turn?', 'Skip', () => act('skip'))) : null),
