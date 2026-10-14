@@ -22,7 +22,7 @@ const DEFAULTS = {
   rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
-const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏'];
+const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏', '👎'];
 const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'clear']);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DIFFS = ['easy', 'medium', 'hard'];
