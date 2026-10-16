@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { WORDS, ALIASES, allDefaultWords, canonKey, matchesAnswer, mentionsAnswer, dedupeCustom } from './words.js';
+import { NEW_WORDS } from './words-new.js';
 import { norm } from './public/shared.js';
 
 const ABSTRACT = ['procrastination', 'deja vu', 'nostalgia', 'sarcasm', 'homework', 'recycling', 'meditation', 'airplane mode', 'monday'];
@@ -132,4 +133,22 @@ test('custom words dedupe by canonical answer and keep the first label', () => {
   expect(dedupeCustom('Ice Cream\nicecream, x, my friend Sam')).toEqual(['ice cream', 'my friend sam']);
   expect(dedupeCustom(['wedding', 'bride and groom'])).toEqual(['wedding', 'bride and groom']);
   expect(dedupeCustom(Array.from({ length: 900 }, (_, i) => `w${i}`))).toHaveLength(500);
+});
+
+test('new word set: full tiers, drawable labels, no overlap with the legacy bank', () => {
+  const legacy = new Set(allDefaultWords().map((w) => canonKey(w).replace(/[ -]/g, '')));
+  const all = [...NEW_WORDS.easy, ...NEW_WORDS.medium, ...NEW_WORDS.hard];
+  expect(NEW_WORDS.easy.length).toBeGreaterThanOrEqual(250);
+  expect(NEW_WORDS.medium.length).toBeGreaterThanOrEqual(250);
+  expect(NEW_WORDS.hard.length).toBeGreaterThanOrEqual(250);
+  expect(new Set(all.map((w) => canonKey(w).replace(/[ -]/g, ''))).size).toBe(all.length);
+  for (const w of all) {
+    expect(w).toMatch(/^[a-z]+(?:[ -][a-z]+)*$/);
+    expect(w.length).toBeLessThanOrEqual(40);
+    expect(w.split(' ').length).toBeLessThanOrEqual(5);
+    expect(mentionsAnswer(`hint: ${w}`, w)).toBe(true);
+    expect(ALIASES).not.toHaveProperty(norm(w));
+    expect(legacy.has(canonKey(w).replace(/[ -]/g, ''))).toBe(false);
+    expect(ABSTRACT).not.toContain(w);
+  }
 });

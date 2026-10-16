@@ -873,6 +873,7 @@ const TIMES = [30, 40, 60, 80, 100, 120, 150, 180, 240];
 const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
+const WORD_SETS = { legacy: 'Legacy', new: 'New' };
 const CHAOS_OPTS = { off: 'Off', x1: '1x · ~1 in 4 turns', x2: '2x · ~1 in 2 turns', x3: '3x · ~3 in 4 turns', x4: '4x · every turn' };
 const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
 const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
@@ -882,7 +883,8 @@ function readSettings() {
   const preset = q('preset').value;
   const out = {
     rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
-    difficulty: q('difficulty').value, chaos: preset === 'classic' ? 'off' : q('chaos').value,
+    difficulty: q('difficulty').value, wordSet: $('#overlay').querySelector('[name=wordSet]:checked')?.value,
+    chaos: preset === 'classic' ? 'off' : q('chaos').value,
     chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
   out.chaosIds = [...$('#overlay').querySelectorAll('.chaos-list input:checked')].map((el) => el.value);
@@ -911,6 +913,11 @@ function buildLobby() {
         if (e.target.value !== 'classic' && $('[name=chaos]').value === 'off') $('[name=chaos]').value = 'x4';
         pushSettings();
       } }, Object.entries(PRESETS).map(([value, text]) => h('option', { value, text })))),
+      h('fieldset', { class: 'word-set' },
+        h('legend', { text: 'Word set' }),
+        h('div', { class: 'seg' }, Object.entries(WORD_SETS).map(([value, text]) => h('label', {},
+          h('input', { type: 'radio', name: 'wordSet', value, onchange: pushSettings }),
+          h('span', { text }))))),
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
       h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
@@ -947,6 +954,10 @@ function syncLobby() {
     if (![...sel.options].some((o) => o.value === String(value))) sel.append(h('option', { value: String(value), text: String(value) }));
     if (sel !== active) sel.value = String(value);
     sel.disabled = !host;
+  }
+  for (const el of $('#overlay').querySelectorAll('[name=wordSet]')) {
+    if (el !== active) el.checked = el.value === (s.wordSet || 'legacy');
+    el.disabled = !host;
   }
   $('#chaosFrequency').hidden = s.chaos === 'off';
   const picked = new Set(s.chaosIds || CHAOS_MODES.map((c) => c.id));

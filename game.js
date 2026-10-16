@@ -2,6 +2,7 @@
 // need send(string), close(code, reason) and a mutable `data` object, and all
 // time goes through `clock`, so tests can drive it deterministically.
 import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './words.js';
+import { NEW_WORDS } from './words-new.js';
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
@@ -19,7 +20,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', wordSet: 'legacy', customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏', '👎'];
@@ -27,6 +28,7 @@ const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'redo', 'clear']);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DIFFS = ['easy', 'medium', 'hard'];
 const DIFFICULTIES = ['mix', ...DIFFS];
+const WORD_SETS = { legacy: WORDS, new: NEW_WORDS };
 export const rooms = new Map();
 const rand = (a) => a[Math.floor(Math.random() * a.length)];
 const shuffle = (a) => shuffleIn(a, Math.random);
@@ -456,7 +458,8 @@ export class Room {
   // on a reroll) only when nothing else exists. Custom-only never falls back
   // to the default bank.
   pickWords(n, avoid = []) {
-    const { customWords, customOnly, difficulty } = this.settings;
+    const { customWords, customOnly, difficulty, wordSet } = this.settings;
+    const bank = WORD_SETS[wordSet] || WORDS;
     const avoidKeys = new Set(avoid.map(canonKey));
     const usedKeys = new Set([...this.used].map(canonKey));
     const rank = (w) => (avoidKeys.has(canonKey(w)) ? 2 : usedKeys.has(canonKey(w)) ? 1 : 0);
@@ -479,7 +482,7 @@ export class Room {
       if (customOnly) { if (!take1(customList, cDiff)) break; continue; }
       if (freshCustom().length && Math.random() < 0.5 && take1(freshCustom(), cDiff)) continue;
       const diff = diffs[i % diffs.length];
-      take1(ordered(WORDS[diff]), diff);
+      take1(ordered(bank[diff]), diff);
     }
     return out.sort((a, b) => DIFFS.indexOf(a.diff) - DIFFS.indexOf(b.diff));
   }
@@ -766,6 +769,7 @@ const handlers = {
       wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),
       hints: clamp(s.hints, 0, 5, DEFAULTS.hints),
       difficulty: DIFFICULTIES.includes(s.difficulty) ? s.difficulty : 'mix',
+      wordSet: Object.hasOwn(WORD_SETS, s.wordSet) ? s.wordSet : DEFAULTS.wordSet,
       customWords: s.customWords == null ? room.settings.customWords : dedupeCustom(s.customWords),
       customOnly: !!s.customOnly,
     };
