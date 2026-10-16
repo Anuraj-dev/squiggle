@@ -2,6 +2,7 @@
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
 import { clock, onMessage, onClose, rooms } from './game.js';
+import { NEW_WORDS } from './words-new.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS,
   guesserPts, drawerPts, jitterPts,
@@ -498,6 +499,17 @@ test('host settings: word choices, hints, difficulty and chaos level', () => {
   ctx.ss[0].do('settings', { settings: { wordChoices: 99, hints: -3, difficulty: 'insane', chaos: 'max' } });
   const t = ctx.room.settings;
   expect([t.wordChoices, t.hints, t.difficulty, t.chaos]).toEqual([5, 0, 'mix', 'off']);
+});
+
+test('word set: the host picks the new bank, and unknown sets fall back to legacy', () => {
+  const ctx = setup(2, { customOnly: false, customWords: '', wordSet: 'new', difficulty: 'easy', wordChoices: 5 });
+  expect(ctx.room.settings.wordSet).toBe('new');
+  ctx.ss[0].do('start');
+  const pool = new Set(NEW_WORDS.easy);
+  expect(ctx.room.choices.map((c) => c.word).every((w) => pool.has(w))).toBe(true);
+  ctx.room.toLobby();
+  ctx.ss[0].do('settings', { settings: { wordSet: 'bogus' } });
+  expect(ctx.room.settings.wordSet).toBe('legacy');
 });
 
 test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
