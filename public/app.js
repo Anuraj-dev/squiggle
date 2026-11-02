@@ -310,6 +310,8 @@ function onMsg(m) {
     case 'state': {
       const prev = S;
       S = m;
+      // Every new turn starts on the pen, so an eraser, stamp or fill from the last drawer's turn never carries over.
+      if (m.state === 'choosing' && prev?.seq !== m.seq) tool = 'pen';
       stateRecvAt = performance.now();
       guessBudgetAt = stateRecvAt;
       if (prev && (prev.state !== m.state || prev.seq !== m.seq || prev.drawerId !== m.drawerId || !!prev.paused !== !!m.paused)) cancelLocal();
