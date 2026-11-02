@@ -112,7 +112,7 @@ test('each active chaos mode adds 25%; speedrun adds another 25%; no chaos pays 
   expect(at([])).toBe(300);
   expect(at([{ id: 'mirror' }])).toBe(375);
   expect(at([{ id: 'speed' }])).toBe(469); // 300 * 1.5625
-  expect(guesserPts({ elapsed: 80000, scoreLen: 80000, diff: 'easy', chaos: null, streak: 3 })).toBe(100 + 40);
+  expect(guesserPts({ elapsed: 80000, scoreLen: 80000, diff: 'easy', chaos: null, streak: 3 })).toBe(100 + 20);
 });
 
 test('two chaos modes multiply more than one; a single mode or null is accepted', () => {
@@ -141,13 +141,14 @@ test('harder words pay more for both roles', () => {
   expect(allBonus('hard', null)).toBe(220);
 });
 
-test('streak adds 20 per step, capped at 5 steps', () => {
+test('streak adds 10 per step, capped at +30 from streak 4', () => {
   const at = (streak) => guesserPts({ elapsed: 0, scoreLen: 80000, diff: 'easy', chaos: null, streak });
   expect(at(1)).toBe(300);
-  expect(at(2)).toBe(320);
-  expect(at(6)).toBe(400);
-  expect(at(7)).toBe(400);
-  expect(at(12)).toBe(400);
+  expect(at(2)).toBe(310);
+  expect(at(3)).toBe(320);
+  expect(at(4)).toBe(330);
+  expect(at(5)).toBe(330);
+  expect(at(12)).toBe(330);
 });
 
 test('scoring is forgiving: grace window, whole seconds, no first-guess cliff', () => {

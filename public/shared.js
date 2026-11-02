@@ -222,8 +222,8 @@ export function timeFrac(elapsed, scoreLen) {
 // No first-guesser bonus: a 1 ms tie must not be worth points.
 // chaos is the array of active modes for the turn (see scoreMult).
 export function guesserPts({ elapsed, scoreLen, diff, chaos, streak }) {
-  const streakN = Math.min(5, Math.max(0, (streak || 1) - 1));
-  return Math.round((100 + 200 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 20;
+  const streakN = Math.min(3, Math.max(0, (streak || 1) - 1));
+  return Math.round((100 + 200 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 10;
 }
 
 // eligible is the number of guessers present when drawing started; it does
