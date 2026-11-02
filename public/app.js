@@ -1182,7 +1182,7 @@ function renderEnd(fresh) {
     h('div', { class: 'end-actions' },
       h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby',
         onclick: () => confirmAction('Save your drawings first?', 'Back to lobby', () => send('again'), {
-          note: 'Everyone heads back to the lobby, and tonight’s gallery disappears from every screen. Grab the results image or download the drawings you love, then go.',
+          note: 'The gallery clears for everyone. Save your drawings first!',
           cancel: 'Stay a little longer',
         }) }),
       h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
