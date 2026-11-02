@@ -245,11 +245,14 @@ function goHome(err) {
   document.title = 'Squiggle — draw badly, guess wildly';
 }
 
-function confirmAction(title, action, accept) {
+function confirmAction(title, action, accept, { note = '', cancel = 'Cancel' } = {}) {
   const modal = $('#confirmModal');
   if (modal.open) return;
   const room = roomCode, seq = S?.seq, player = myId, opener = document.activeElement;
   $('#confirmTitle').textContent = title;
+  $('#confirmNote').textContent = note;
+  $('#confirmNote').hidden = !note;
+  $('#confirmCancel').textContent = cancel;
   $('#confirmAccept').textContent = action;
   modal.returnValue = '';
   modal.addEventListener('close', () => {
@@ -1177,7 +1180,11 @@ function renderEnd(fresh) {
           h('button', { class: 'dl', text: '⬇', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl })));
     })),
     h('div', { class: 'end-actions' },
-      h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby', onclick: () => send('again') }),
+      h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby',
+        onclick: () => confirmAction('Save your drawings first?', 'Back to lobby', () => send('again'), {
+          note: 'Everyone heads back to the lobby, and tonight’s gallery disappears from every screen. Grab the results image or download the drawings you love, then go.',
+          cancel: 'Stay a little longer',
+        }) }),
       h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
         onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes })) }) }),
       h('button', { class: 'btn big', text: '🔗 Invite more friends', onclick: copyInvite }),

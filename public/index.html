@@ -116,8 +116,9 @@
   <dialog id="confirmModal" class="card confirm-modal" aria-labelledby="confirmTitle">
     <form method="dialog">
       <h2 id="confirmTitle"></h2>
+      <p id="confirmNote" class="confirm-note" hidden></p>
       <div class="confirm-actions">
-        <button class="btn" value="cancel" autofocus>Cancel</button>
+        <button id="confirmCancel" class="btn" value="cancel" autofocus>Cancel</button>
         <button id="confirmAccept" class="btn primary" value="accept"></button>
       </div>
     </form>
