@@ -2,7 +2,7 @@
 // stroke contracts, chaos and scoring cannot drift.
 
 export const W = 1000, H = 750;
-export const CHOOSE_MS = 15000, REVEAL_MS = 6000;
+export const CHOOSE_MS = 25000, REVEAL_MS = 6000;
 export const DIFF_MULT = { easy: 1, medium: 1.5, hard: 2.2 };
 export const MAX_STROKES = 2500;
 export const MAX_STROKE_PTS = 8000;
