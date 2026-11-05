@@ -47,7 +47,6 @@ export const CHAOS_MODES = [
   { id: 'fivestrokes', icon: '✋', name: 'Five Strokes', desc: "Five pen strokes. Undo and clear don't restore them." },
   { id: 'inkbudget', icon: '🖋️', name: 'Ink Budget', desc: "Erasing uses ink. Undo and clear don't refill it.", mild: true },
   { id: 'mystery', icon: '❓', name: 'Mystery Length', desc: 'Word length appears halfway through.', view: true, mild: true },
-  { id: 'curtain', icon: '🎭', name: 'Curtain Reveal', desc: 'The drawing opens in strips.', view: true, mild: true },
   { id: 'straight', icon: '📏', name: 'Straight Lines Only', desc: 'Draw with straight lines.' },
   { id: 'forbidden', icon: '🚧', name: 'Forbidden Zone', desc: 'Ink cannot enter the marked area.' },
   { id: 'shrinking', icon: '🪡', name: 'Shrinking Brush', desc: 'Your pen gets thinner as time passes.', mild: true },

@@ -662,7 +662,7 @@ test('presets use separate pools; mixed pairs 35% of turns with a mild guesser s
     ctx.room.rollChaos();
     expect(ctx.room.chaos.id).toBe(artistPool[full].id); expect(ctx.room.chaos.mild).toBeFalsy();
     expect(ctx.room.guesserChaos.mild).toBe(true);
-    expect(['mystery', 'curtain', 'batches']).toContain(ctx.room.guesserChaos.id);
+    expect(['mystery', 'batches']).toContain(ctx.room.guesserChaos.id);
     // Pair roll 0.36 is just above the 35% line, so no pair: the role roll 0.4 picks the artist side.
     rng.mockReturnValueOnce(0.36).mockReturnValueOnce(0.4); ctx.room.rollChaos();
     expect(ctx.room.chaos).not.toBeNull(); expect(ctx.room.guesserChaos).toBeNull();
@@ -672,21 +672,21 @@ test('presets use separate pools; mixed pairs 35% of turns with a mild guesser s
 test('role cards: both challenges are public to every player in every state', () => {
   const ctx = setup(3);
   ctx.ss[0].do('start'); ctx.room.chaos = { ...tw('fivestrokes'), name: 'Five Strokes', desc: 'Five pen strokes.' };
-  ctx.room.guesserChaos = { ...tw('curtain'), name: 'Curtain Reveal', desc: 'The drawing opens in strips.' };
+  ctx.room.guesserChaos = { ...tw('mystery'), name: 'Mystery Length', desc: 'Word length appears halfway through.' };
   ctx.room.sync();
   const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId), guessers = ctx.ss.filter((s) => s !== drawer);
-  for (const g of guessers) { expect(g.state().chaos.name).toBe('Five Strokes'); expect(g.state().guesserChaos.id).toBe('curtain'); }
+  for (const g of guessers) { expect(g.state().chaos.name).toBe('Five Strokes'); expect(g.state().guesserChaos.id).toBe('mystery'); }
   drawer.act('choose', { i: 0 });
   for (const g of guessers) {
     expect(g.state().state).toBe('drawing');
     expect(g.state().chaos).toEqual(ctx.room.chaos);
-    expect(g.state().guesserChaos.name).toBe('Curtain Reveal');
+    expect(g.state().guesserChaos.name).toBe('Mystery Length');
     expect(g.state().word).toBeNull();
   }
   drawer.act('skip');
   for (const g of guessers) {
     expect(g.state().reveal.artistChaos.name).toBe('Five Strokes');
-    expect(g.state().reveal.guesserChaos.name).toBe('Curtain Reveal');
+    expect(g.state().reveal.guesserChaos.name).toBe('Mystery Length');
   }
 });
 
