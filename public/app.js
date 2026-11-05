@@ -1202,7 +1202,6 @@ $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 
 let lastSec = -1;
 let lastView = 0;
-const curtain = $('#curtain'), curtainCtx = curtain.getContext('2d');
 function paintGuesserView(now) {
   if (now - lastView < 100) return;
   lastView = now;
@@ -1216,16 +1215,6 @@ function paintGuesserView(now) {
     ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
     : guesserView('quake') && !reducedMotion && amount > 0
       ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
-  curtain.hidden = !guesserView('curtain') || amount === 0;
-  if (!curtain.hidden) {
-    curtainCtx.clearRect(0, 0, W, H);
-    curtainCtx.fillStyle = '#ece3d0';
-    for (let i = 0; i < 10; i++) {
-      const width = W / 10, covered = width * amount / 2;
-      curtainCtx.fillRect(i * width, 0, covered, H);
-      curtainCtx.fillRect((i + 1) * width - covered, 0, covered, H);
-    }
-  }
   if (guesserView('spotlight') || liveChaos('forbidden') || liveChaos('shrinking')) drawFx();
 }
 function tick() {
