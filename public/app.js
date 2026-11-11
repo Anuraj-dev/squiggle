@@ -683,9 +683,14 @@ function render(prev) {
   const tw = turnChaos();
   $('#blind').hidden = !(is(tw, 'blind') && isDrawer);
   renderChallenge();
+  $('#game').classList.toggle('paused', !!S.paused);
+  // Inert blocks clicks, focus and keyboard on the players and stage while paused. Chat and the top bar stay live.
+  $('.players').inert = !!S.paused;
+  $('.stage').inert = !!S.paused;
   const pause = $('#pauseBanner');
   pause.hidden = !S.paused;
-  if (S.paused) pause.textContent = `⏸️ ${S.paused.reason || 'Paused'}`;
+  if (S.paused) pause.replaceChildren(h('div', { class: 'pause-card' },
+    h('b', { text: '⏸️ Paused' }), h('span', { text: S.paused.reason || 'Waiting…' })));
   renderOverlay(isDrawer, drawer);
   renderToolbar();
   renderReactbar();
