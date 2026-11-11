@@ -461,10 +461,20 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 
+/* Paused: veil the board, dim the rest of the game, and block input until resumed (see render() in app.js). */
 .pause-banner {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6;
-  background: var(--warn-bg); border: var(--line); border-radius: 12px; padding: 0.8rem 1.1rem;
-  box-shadow: var(--shadow); font-weight: 700; text-align: center; max-width: 90%;
+  position: absolute; inset: 0; z-index: 6; display: grid; place-items: center; padding: 1rem;
+  background: rgba(246, 240, 228, 0.82); backdrop-filter: blur(3px); animation: fadeIn 0.25s;
+}
+.pause-banner[hidden] { display: none; }
+.pause-card {
+  background: var(--warn-bg); border: var(--line); border-radius: 12px; padding: 0.9rem 1.6rem;
+  box-shadow: var(--shadow); text-align: center; display: flex; flex-direction: column; gap: 0.3rem; max-width: 90%;
+}
+.pause-card b { font-size: 1.6rem; }
+.pause-card span { font-weight: 700; opacity: 0.8; }
+#game.paused .players, #game.paused .challenge, #game.paused .toolbar, #game.paused .reactbar {
+  opacity: 0.4; transition: opacity 0.25s;
 }
 .gal .thumb-btn { display: block; padding: 0; border: 0; background: #fff; cursor: zoom-in; border-bottom: 2px solid var(--ink); }
 .gal .thumb-btn:focus-visible { outline: 3px solid var(--grape); outline-offset: -3px; }
