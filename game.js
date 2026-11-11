@@ -76,6 +76,8 @@ export class Room {
     this.pausedAt = 0;
     this.pauseReason = null;
     this.remainingOnPause = 0;
+    // Set by the host; holds play until they resume. Cleared when the room leaves play.
+    this.hostPaused = false;
     this.revealed = [];
     this.hintPlan = [];
     this.guessed = new Map();
@@ -183,6 +185,7 @@ export class Room {
       you: p.id,
       code: this.code,
       hostId: this.hostId,
+      hostPaused: this.hostPaused,
       settings: this.settingsFor(p),
       state: this.state,
       round: this.round,
@@ -358,19 +361,19 @@ export class Room {
 
   inPlay() { return ['choosing', 'drawing', 'reveal'].includes(this.state); }
 
-  shouldPause() {
-    if (!this.inPlay()) return false;
-    if (this.connected.length < 2) return true;
+  // Why play is held right now, or null. A disconnect is shown ahead of a host pause.
+  holdReason() {
+    if (!this.inPlay()) return null;
+    if (this.connected.length < 2) return 'Waiting for a player to reconnect…';
     const d = this.players.get(this.drawerId);
-    return (this.state === 'choosing' || this.state === 'drawing') && !!d && !d.connected;
+    if ((this.state === 'choosing' || this.state === 'drawing') && d && !d.connected) return `Waiting for ${d.name} to reconnect…`;
+    return this.hostPaused ? 'Paused by the host' : null;
   }
 
   updatePause() {
-    if (this.shouldPause()) {
-      const drawer = this.players.get(this.drawerId);
-      this.pauseReason = this.connected.length < 2
-        ? 'Waiting for a player to reconnect…'
-        : `Waiting for ${drawer?.name || 'the artist'} to reconnect…`;
+    const hold = this.holdReason();
+    if (hold) {
+      this.pauseReason = hold;
       if (!this.pausedAt) {
         this.pausedAt = clock.now();
         this.clearTimeoutsOnly();
@@ -413,6 +416,7 @@ export class Room {
     this.clearTimers();
     this.turnSeq++;
     this.state = state;
+    if (!this.inPlay()) this.hostPaused = false;
     this.pausedAt = 0;
     this.pauseReason = null;
     this.pauseAccum = 0;
@@ -677,6 +681,13 @@ export class Room {
     this.sync();
   }
 
+  setHostPaused(on) {
+    if (!this.inPlay() || on === this.hostPaused) return;
+    this.hostPaused = on;
+    this.system(on ? '⏸️ The host paused the game' : '▶️ The host resumed the game', 'warn');
+    this.updatePause();
+  }
+
   migrateHost() {
     if (this.players.get(this.hostId)?.connected) return;
     const next = this.order.map((id) => this.players.get(id)).find((p) => p?.connected);
@@ -929,6 +940,7 @@ const handlers = {
     const target = room.players.get(m.id);
     if (target && target.id !== p.id && p.id === room.hostId) room.kick(target);
   },
+  pause(room, p, m) { if (p.id === room.hostId) room.setHostPaused(m.on === true); },
   ping(room, p) { room.send(p, 'pong'); },
   leave(room, p) {
     p.connected = false;
