@@ -4,7 +4,7 @@ import { beforeEach, expect, test, spyOn } from 'bun:test';
 import { clock, onMessage, onClose, rooms } from './game.js';
 import { NEW_WORDS } from './words-new.js';
 import {
-  GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS,
+  GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
   INK_BUDGET, STROKE_BUDGET, forbiddenZone, slipperyPts, CHAOS_MODES,
 } from './public/shared.js';
@@ -938,4 +938,87 @@ test('redo in the lobby is per player', () => {
   a.act('undo'); b.act('undo');
   a.act('redo');
   expect(ctx.room.strokes.map((s) => s.id)).toEqual([`${a.id}:x`]);
+});
+
+test('host pause freezes the timer, blocks guesses and drawing, and resume restores the clock', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b] } = startDrawing(ctx);
+  const host = ctx.ss.find((s) => s.id === ctx.room.hostId);
+  advance(10000);
+  host.do('pause', { on: true });
+  const frozen = b.state();
+  expect(frozen.hostPaused).toBe(true);
+  expect(frozen.paused).toEqual(expect.objectContaining({ reason: 'Paused by the host' }));
+  advance(60000);
+  expect(ctx.room.state).toBe('drawing');
+  expect(ctx.room.timeLeft()).toBe(frozen.timeLeft);
+  expect(ctx.room.clockMs()).toBe(frozen.gameMs);
+
+  const guessMark = b.mark();
+  b.act('chat', { text: ctx.room.word, requestId: 'paused-guess' });
+  expect(ctx.room.guessed.size).toBe(0);
+  expect(b.since(guessMark, 'guess-result')[0]?.accepted).toBe(false);
+  const drawMark = drawer.mark();
+  drawer.act('stroke', { s: pen('during-pause', [1, 1]) });
+  expect(drawer.since(drawMark, 'draw-reject')[0]?.reason).toBe('paused');
+
+  host.do('pause', { on: false });
+  expect(b.state().paused).toBeNull();
+  expect(b.state().timeLeft).toBe(frozen.timeLeft);
+  advance(1000);
+  expect(ctx.room.timeLeft()).toBe(frozen.timeLeft - 1000);
+});
+
+test('only the host can pause, and pausing outside play does nothing', () => {
+  const ctx = setup(3);
+  const other = ctx.ss.find((s) => s.id !== ctx.room.hostId);
+  other.do('start');
+  expect(ctx.room.state).toBe('lobby');
+  ctx.ss.find((s) => s.id === ctx.room.hostId).do('pause', { on: true });
+  expect(ctx.room.hostPaused).toBe(false);
+  expect(ctx.room.pausedAt).toBe(0);
+
+  const { guessers: [b] } = startDrawing(ctx);
+  b.do('pause', { on: true });
+  expect(ctx.room.hostPaused).toBe(false);
+  expect(b.state().paused).toBeNull();
+});
+
+test('a host pause holds across a phase change, and the new host can resume', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b, c] } = startDrawing(ctx);
+  expect(ctx.room.hostId).toBe(drawer.id);
+  drawer.do('pause', { on: true });
+  drawer.do('leave');
+  expect(ctx.room.state).toBe('reveal');
+  expect(ctx.room.pausedAt).toBeTruthy();
+  advance(REVEAL_MS + 60000);
+  expect(ctx.room.state).toBe('reveal');
+
+  const newHost = [b, c].find((s) => s.id === ctx.room.hostId);
+  newHost.do('pause', { on: false });
+  expect(ctx.room.pausedAt).toBe(0);
+  advance(REVEAL_MS + 1);
+  expect(ctx.room.state).toBe('choosing');
+});
+
+test('a reconnect is reported ahead of a host pause, and the host pause outlasts it', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b] } = startDrawing(ctx);
+  drawer.do('pause', { on: true });
+  drawer.drop();
+  expect(b.state().paused.reason).toBe(`Waiting for ${drawer.name} to reconnect…`);
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: drawer.name, token: drawer.out.find((m) => m.t === 'welcome').token });
+  expect(b.state().paused.reason).toBe('Paused by the host');
+});
+
+test('going back to the lobby clears a host pause', () => {
+  const ctx = setup(2);
+  const { drawer, guessers: [b] } = startDrawing(ctx);
+  drawer.do('pause', { on: true });
+  b.do('leave');
+  expect(ctx.room.state).toBe('lobby');
+  expect(ctx.room.hostPaused).toBe(false);
+  expect(drawer.state().paused).toBeNull();
 });

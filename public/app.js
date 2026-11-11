@@ -270,6 +270,7 @@ function leaveRoom() {
   history.replaceState(null, '', location.pathname);
   goHome();
 }
+$('#pauseBtn').onclick = () => { if (S) send('pause', { on: !S.hostPaused }); };
 $('#leaveBtn').onclick = () => {
   if (S && S.state !== 'lobby' && S.state !== 'end') confirmAction('Leave this game?', 'Leave', leaveRoom);
   else leaveRoom();
@@ -672,6 +673,11 @@ function render(prev) {
   renderWord(isDrawer, drawer);
   $('#timer').hidden = !inGame();
   $('#timer').classList.toggle('paused', !!S.paused);
+  const pauseBtn = $('#pauseBtn');
+  pauseBtn.hidden = !(inGame() && S.hostId === myId);
+  pauseBtn.textContent = S.hostPaused ? '▶️' : '⏸️';
+  pauseBtn.title = S.hostPaused ? 'Resume game' : 'Pause game';
+  pauseBtn.setAttribute('aria-label', pauseBtn.title);
 
   $('#boardWrap').classList.toggle('can-draw', canDraw());
   const tw = turnChaos();
