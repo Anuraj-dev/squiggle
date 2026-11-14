@@ -75,3 +75,7 @@ The client is plain ES modules with no build step. The six background tracks are
 
 - [AGENTS.md](AGENTS.md) covers the commands, file layout and protocol rules for changing the code.
 - [docs/CHECKPOINT.md](docs/CHECKPOINT.md) holds the dated status, decisions and open items.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
