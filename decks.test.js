@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { DECKS, DECK_WARNINGS, DECK_IDS, DEFAULT_DECKS, ALL_DECK_KEYS, TIERS, buildDecks, cleanDeckIds } from './decks.js';
-import { WORDS, canonKey, matchesAnswer, singulars, stripWrapper } from './words.js';
+import { WORDS, canonKey, matchesAnswer, singulars, wrapperStages } from './words.js';
 import { NEW_WORDS } from './words-new.js';
 
 const flat = (k) => k.replace(/ /g, '');
@@ -30,7 +30,7 @@ test('shipped decks load clean: valid answers, one owner per answer, Everyday = 
     for (const k of keysOf(w)) byKey.set(k, [...(byKey.get(k) || []), [d.id, w]]);
   }
   for (const d of DECKS) for (const u of TIERS.flatMap((t) => d[t])) {
-    for (const k of new Set([...keysOf(u), ...keysOf(stripWrapper(u))])) {
+    for (const k of new Set([...keysOf(u), ...wrapperStages(u).flatMap(keysOf)])) {
       for (const [id, w] of byKey.get(k) || []) {
         if (id !== d.id && matchesAnswer(u, w)) throw new Error(`${d.id} "${u}" matches ${id} "${w}"`);
       }

@@ -1745,7 +1745,8 @@ export function singulars(s) {
   const i = n.lastIndexOf(' ') + 1;
   const head = n.slice(0, i), last = n.slice(i);
   if (last.length < 4 || !last.endsWith('s') || /(ss|us|is)$/.test(last)) return [];
-  const out = new Set([last.slice(0, -1)]);
+  // "-sses" only drops "es" ("glasses" -> "glass", never "glasse").
+  const out = new Set(last.endsWith('sses') ? [] : [last.slice(0, -1)]);
   if (last.endsWith('ies')) out.add(`${last.slice(0, -3)}y`);
   if (last.endsWith('ves')) { out.add(`${last.slice(0, -3)}f`); out.add(`${last.slice(0, -3)}fe`); }
   if (/(s|x|z|ch|sh|o)es$/.test(last)) out.add(last.slice(0, -2));
@@ -1793,20 +1794,25 @@ const OPENERS = ['i think its', 'i think', 'is it', 'it is', 'its', 'maybe', 'pr
 const ARTICLES = new Set(['a', 'an', 'the']);
 const FILLERS = new Set(['pls', 'please', 'lol', 'bro', 'right', 'maybe']);
 
-export function stripWrapper(text) {
+// Each stage of unwrapping, least stripped first: opener, then article, then
+// fillers one at a time. The last stage is the fully stripped text.
+export function wrapperStages(text) {
   let toks = norm(text).split(' ').filter(Boolean);
+  const out = [];
   const op = OPENERS.find((o) => o.length < toks.length && o.every((t, k) => toks[k] === t));
-  if (op) toks = toks.slice(op.length);
-  if (toks.length > 1 && ARTICLES.has(toks[0])) toks = toks.slice(1);
-  while (toks.length > 1 && FILLERS.has(toks.at(-1))) toks = toks.slice(0, -1);
-  return toks.join(' ');
+  if (op) out.push((toks = toks.slice(op.length)).join(' '));
+  if (toks.length > 1 && ARTICLES.has(toks[0])) out.push((toks = toks.slice(1)).join(' '));
+  while (toks.length > 1 && FILLERS.has(toks.at(-1))) out.push((toks = toks.slice(0, -1)).join(' '));
+  return out.length ? out : [toks.join(' ')];
 }
 
-// The whole input first, then with its wrapper stripped ("is it a cat?").
+export const stripWrapper = (text) => wrapperStages(text).at(-1);
+
+// The whole input first, then each unwrapping stage, so an article or filler
+// that belongs to the answer ("is it the floss", "is it swipe right") stays.
 export function matchesAnswer(guess, word) {
-  if (sameAnswer(guess, word)) return true;
-  const inner = stripWrapper(guess);
-  return inner !== norm(guess) && sameAnswer(inner, word);
+  const same = answerTest(word);
+  return same(guess) || wrapperStages(guess).some((inner) => inner !== norm(guess) && same(inner));
 }
 
 // True when a run of whole words in `text` is the answer, an alias of it, or

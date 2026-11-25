@@ -158,10 +158,11 @@ test('one sentence wrapper around a single answer scores; lists and junk do not'
     ['is it a cat?', 'cat'], ['its the cat', 'cat'], ["it's a cat lol", 'cat'], ['i think its an apple', 'apple'],
     ['maybe cat', 'cat'], ['probably the fire truck pls', 'fire truck'], ['must be a rabbit bro', 'rabbit'],
     ['looks like bunnies', 'rabbit'], ['the cat', 'cat'], ['cat right', 'cat'], ['IS IT A FRIDGE', 'refrigerator'],
+    ['Is it the floss?', 'the floss'], ['Is it swipe right?', 'swipe right'], ['maybe swipe right lol', 'swipe right'],
   ]) expect(matchesAnswer(guess, word)).toBe(true);
   for (const [guess, word] of [
     ['cat dog car', 'cat'], ['cat or dog', 'cat'], ['is it not a cat', 'cat'], ['maybe maybe cat', 'cat'],
-    ['is it', 'its'], ['a', 'cat'], ['lol', 'cat'],
+    ['is it', 'its'], ['a', 'cat'], ['lol', 'cat'], ['is it swipe right', 'swipe left'],
   ]) expect(matchesAnswer(guess, word)).toBe(false);
   // A list still mentions the answer, so it is held back as a spoiler.
   expect(mentionsAnswer('cat dog car', 'cat')).toBe(true);
@@ -177,7 +178,7 @@ test('regular plurals match in both directions for any word, without fuzzy wins'
   ]) expect(matchesAnswer(guess, word)).toBe(true);
   for (const [guess, word] of [
     ['catz', 'cat'], ['ca', 'cat'], ['bu', 'bus'], ['octopu', 'octopus'], ['iri', 'iris'], ['glas', 'glass'],
-    ['berri', 'berry'], ['wolfs', 'wolves'], ['as', 'a'], ['is', 'i'], ['ga', 'gas'], ['cd', 'cds'],
+    ['berri', 'berry'], ['wolfs', 'wolves'], ['glasse', 'glasses'], ['glasse', 'glass'], ['as', 'a'], ['is', 'i'], ['ga', 'gas'], ['cd', 'cds'],
     ['vitamin cs', 'vitamin c'], ['pies', 'pi'],
   ]) expect(matchesAnswer(guess, word)).toBe(false);
   // Stubs are never stripped: short words and -ss/-us/-is endings.
