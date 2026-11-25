@@ -66,6 +66,23 @@ test('deck aliases fold into matching and cannot hijack existing answers', () =>
   expect(warnings.filter((m) => /invalid/.test(m))).toHaveLength(3);
 });
 
+test('everyday dedupes by exact key but reserves its plural forms for later decks and aliases', () => {
+  const warnings = [];
+  const [every, a, b] = buildDecks([
+    { id: 'everyday', name: 'E', icon: 'e', easy: ['blorpwolves', 'blorpwolf', 'blorpwolves'] },
+    { id: 'zz3', name: 'Three', icon: '3', easy: ['blorpwolfe', 'snizzle'] },
+    { id: 'zz4', name: 'Four', icon: '4', easy: ['gronk'], aliases: { blorpwolfe: 'gronk' } },
+  ], (m) => warnings.push(m));
+  expect(every.easy).toEqual(['blorpwolves', 'blorpwolf']);
+  expect(a.easy).toEqual(['snizzle']);
+  expect(b.easy).toEqual(['gronk']);
+  expect(warnings).toEqual([
+    'zz3: "blorpwolfe" already belongs to everyday',
+    'zz4: alias "blorpwolfe" would hijack an existing answer',
+  ]);
+  expect(canonKey('blorpwolfe')).toBe('blorpwolfe');
+});
+
 test('deck ids are sanitised to known ids with a default', () => {
   expect(cleanDeckIds(['dev', 'nope', 'tech', 'dev'])).toEqual(['tech', 'dev']);
   expect(cleanDeckIds([])).toEqual(DEFAULT_DECKS);

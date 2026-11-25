@@ -23,6 +23,7 @@ const answerKeys = (w) => [w, ...singulars(w)].map((x) => flat(canonKey(x)));
 
 export function buildDecks(specs, warn = (m) => console.warn(`[decks] ${m}`)) {
   const owner = new Map(); // answer key -> deck id
+  const everydayExact = new Set();
   const decks = [];
   for (const spec of specs) {
     const deck = { id: spec.id, name: spec.name, icon: spec.icon, easy: [], medium: [], hard: [] };
@@ -33,14 +34,17 @@ export function buildDecks(specs, warn = (m) => console.warn(`[decks] ${m}`)) {
           warn(`${spec.id}: skipped invalid answer ${JSON.stringify(raw)}`);
           continue;
         }
-        // Everyday is the curated legacy bank: dedupe it by exact key only.
-        const keys = spec.id === 'everyday' ? [flat(canonKey(w))] : answerKeys(w);
-        const taken = keys.map((k) => owner.get(k)).find(Boolean);
-        if (taken) {
-          if (spec.id !== 'everyday') warn(`${spec.id}: "${w}" already belongs to ${taken}`);
-          continue;
+        const keys = answerKeys(w);
+        // Everyday is the curated legacy bank: it dedupes among itself by exact
+        // key only, but still reserves every form for later decks and aliases.
+        if (spec.id === 'everyday') {
+          if (everydayExact.has(keys[0])) continue;
+          everydayExact.add(keys[0]);
+        } else {
+          const taken = keys.map((k) => owner.get(k)).find(Boolean);
+          if (taken) { warn(`${spec.id}: "${w}" already belongs to ${taken}`); continue; }
         }
-        for (const k of keys) owner.set(k, spec.id);
+        for (const k of keys) if (!owner.has(k)) owner.set(k, spec.id);
         deck[tier].push(w);
       }
     }
