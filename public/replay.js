@@ -238,43 +238,59 @@ export function drawingSegments(g, { target = CLIP_MS, card = null, cache = null
 // MediaRecorder while a timer paints frames. Timers (not rAF) keep it going in
 // a background tab; times come from the wall clock, so a late tick never
 // stretches the clip. Resolves { blob, mime, ext }; rejects with AbortError on
-// cancel.
+// cancel. Cancel, setup failure, recorder error and completion all go through
+// one teardown, so no path leaves a timer, listener or capture track running.
 export function recordSegments(segments, { onProgress = () => {}, signal, fps = 30 } = {}) {
   return new Promise((resolve, reject) => {
+    const cancelled = () => new DOMException('Recording cancelled', 'AbortError');
+    if (signal?.aborted) return reject(cancelled());
     const picked = pickMime((m) => MediaRecorder.isTypeSupported(m));
     if (!picked) return reject(new Error('recording not supported'));
-    const [cv, ctx] = paperCanvas();
-    segments[0]?.paint(ctx, 0);
-    const stream = cv.captureStream(fps);
-    const rec = new MediaRecorder(stream, { mimeType: picked.mime, videoBitsPerSecond: 4e6 });
     const chunks = [];
-    const total = segments.reduce((n, s) => n + s.ms, 0);
-    let timer = 0, aborted = false, t0 = 0;
-    rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-    rec.onerror = (e) => { clearTimeout(timer); stream.getTracks().forEach((t) => t.stop()); reject(e.error || new Error('recorder failed')); };
-    rec.onstop = () => {
+    let stream = null, rec = null, timer = 0, done = false, t0 = 0;
+    const finish = (err, clip) => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
-      stream.getTracks().forEach((t) => t.stop());
-      if (aborted) return reject(new DOMException('Recording cancelled', 'AbortError'));
-      const type = picked.mime.split(';')[0];
-      resolve({ blob: new Blob(chunks, { type }), mime: type, ext: picked.ext });
+      signal?.removeEventListener('abort', abort);
+      if (rec) {
+        rec.ondataavailable = rec.onerror = rec.onstop = null;
+        try { if (rec.state !== 'inactive') rec.stop(); } catch {}
+      }
+      stream?.getTracks().forEach((t) => t.stop());
+      if (err) reject(err); else resolve(clip);
     };
-    const abort = () => { aborted = true; if (rec.state !== 'inactive') rec.stop(); };
-    if (signal?.aborted) return abort();
+    const abort = () => finish(cancelled());
     signal?.addEventListener('abort', abort, { once: true });
-    const frame = () => {
-      if (aborted) return;
-      const el = Math.min(total, performance.now() - t0);
-      let at = el, k = 0;
-      while (k < segments.length - 1 && at >= segments[k].ms) at -= segments[k++].ms;
-      segments[k]?.paint(ctx, Math.min(at, segments[k].ms));
-      onProgress(total ? el / total : 1);
-      if (el >= total) { signal?.removeEventListener('abort', abort); return rec.stop(); }
-      timer = setTimeout(frame, 1000 / fps);
-    };
-    rec.start(500);
-    t0 = performance.now();
-    frame();
+    try {
+      const [cv, ctx] = paperCanvas();
+      segments[0]?.paint(ctx, 0);
+      stream = cv.captureStream(fps);
+      rec = new MediaRecorder(stream, { mimeType: picked.mime, videoBitsPerSecond: 4e6 });
+      const total = segments.reduce((n, s) => n + s.ms, 0);
+      rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+      rec.onerror = (e) => finish(e.error || new Error('recorder failed'));
+      rec.onstop = () => {
+        const type = picked.mime.split(';')[0];
+        finish(null, { blob: new Blob(chunks, { type }), mime: type, ext: picked.ext });
+      };
+      const frame = () => {
+        if (done) return;
+        try {
+          const el = Math.min(total, performance.now() - t0);
+          let at = el, k = 0;
+          while (k < segments.length - 1 && at >= segments[k].ms) at -= segments[k++].ms;
+          segments[k]?.paint(ctx, Math.min(at, segments[k].ms));
+          onProgress(total ? el / total : 1);
+          // The last chunk arrives before onstop, which resolves.
+          if (el >= total) return rec.stop();
+          timer = setTimeout(frame, 1000 / fps);
+        } catch (err) { finish(err); }
+      };
+      rec.start(500);
+      t0 = performance.now();
+      frame();
+    } catch (err) { finish(err); }
   });
 }
 

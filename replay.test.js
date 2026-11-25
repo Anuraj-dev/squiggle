@@ -1,7 +1,7 @@
-// Pure replay timeline and clip helpers; no canvas needed.
+// Pure replay timeline and clip helpers, plus the recorder lifecycle against stubs.
 import { expect, test } from 'bun:test';
 import {
-  orderStrokes, buildTimeline, frameAt, partialStroke, strokesAt, clipPlan, clipName, pickMime, CLIP_MS,
+  orderStrokes, buildTimeline, frameAt, partialStroke, strokesAt, clipPlan, clipName, pickMime, recordSegments, CLIP_MS,
 } from './public/replay.js';
 
 const pen = (id, t, pts) => ({ id, t, tool: 'pen', color: '#000000', size: 6, pts });
@@ -87,4 +87,69 @@ test('recorder format prefers MP4, falls back to WebM, and reports none when uns
   expect(pickMime((m) => m === 'video/webm')).toEqual({ mime: 'video/webm', ext: 'webm' });
   expect(pickMime(() => false)).toBe(null);
   expect(pickMime(() => { throw new Error('nope'); })).toBe(null);
+});
+
+// Minimal recorder doubles: a canvas whose stream counts live tracks, and a
+// MediaRecorder that fires onstop asynchronously like the real one.
+function stubRecorder({ failCtor = false } = {}) {
+  const log = { streams: 0, recorders: 0, live: 0, stopped: 0 };
+  const saved = { document: globalThis.document, MediaRecorder: globalThis.MediaRecorder };
+  globalThis.document = {
+    createElement: () => ({
+      getContext: () => ({ setTransform() {}, fillRect() {}, drawImage() {}, save() {}, restore() {} }),
+      captureStream: () => {
+        log.streams++; log.live++;
+        const track = { stop() { if (!this.done) { this.done = true; log.live--; } } };
+        return { getTracks: () => [track] };
+      },
+    }),
+  };
+  globalThis.MediaRecorder = class {
+    static isTypeSupported(m) { return m === 'video/webm'; }
+    constructor() { if (failCtor) throw new Error('no encoder'); log.recorders++; this.state = 'inactive'; }
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; log.stopped++; setTimeout(() => this.onstop?.(), 0); }
+  };
+  return { log, restore: () => Object.assign(globalThis, saved) };
+}
+const seg = (ms) => [{ ms, paint() {} }];
+
+test('an already-aborted recording rejects without opening a stream', async () => {
+  const { log, restore } = stubRecorder();
+  try {
+    const ctl = new AbortController(); ctl.abort();
+    const err = await recordSegments(seg(1000), { signal: ctl.signal }).catch((e) => e);
+    expect(err.name).toBe('AbortError');
+    expect(log.streams).toBe(0); expect(log.recorders).toBe(0);
+  } finally { restore(); }
+});
+
+test('cancelling mid-recording rejects at once and stops recorder and tracks', async () => {
+  const { log, restore } = stubRecorder();
+  try {
+    const ctl = new AbortController();
+    const p = recordSegments(seg(60000), { signal: ctl.signal });
+    ctl.abort();
+    const err = await p.catch((e) => e);
+    expect(err.name).toBe('AbortError');
+    expect(log.stopped).toBe(1); expect(log.live).toBe(0);
+  } finally { restore(); }
+});
+
+test('a recorder setup failure rejects and stops the capture track', async () => {
+  const { log, restore } = stubRecorder({ failCtor: true });
+  try {
+    const err = await recordSegments(seg(1000)).catch((e) => e);
+    expect(err.message).toBe('no encoder');
+    expect(log.streams).toBe(1); expect(log.live).toBe(0);
+  } finally { restore(); }
+});
+
+test('a finished recording resolves a clip and releases its tracks', async () => {
+  const { log, restore } = stubRecorder();
+  try {
+    const clip = await recordSegments(seg(30));
+    expect(clip.ext).toBe('webm'); expect(clip.mime).toBe('video/webm');
+    expect(log.stopped).toBe(1); expect(log.live).toBe(0);
+  } finally { restore(); }
 });

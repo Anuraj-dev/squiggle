@@ -1150,14 +1150,18 @@ function queueThumbs(items) {
 const recordings = new Set();
 
 // A button that records a video and hands it over, showing progress and a
-// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Returns
-// null (no button at all) where the browser cannot record.
-function recorder(label, title, job) {
+// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Aborting
+// `until` (e.g. its dialog closing) cancels a running recording. Returns null
+// (no button at all) where the browser cannot record.
+function recorder(label, title, job, until) {
   if (!recordingSupported()) return null;
   const wrap = h('div', { class: 'rec' });
   const idle = () => fill(wrap, h('button', { class: 'btn', type: 'button', text: label, title, onclick: start }));
   async function start() {
+    if (until?.aborted) return;
     const ctl = new AbortController();
+    const stop = () => ctl.abort();
+    until?.addEventListener('abort', stop, { once: true });
     recordings.add(ctl);
     const bar = h('progress', { max: 1, value: 0, 'aria-label': 'Recording progress' });
     const pct = h('span', { class: 'rec-pct', text: '0%' });
@@ -1170,6 +1174,7 @@ function recorder(label, title, job) {
         signal: ctl.signal,
         onProgress: (f) => { bar.value = f; pct.textContent = `${Math.round(f * 100)}%`; },
       });
+      ctl.signal.throwIfAborted();
       const filename = name(clip.ext);
       const out = deliverClip(clip, filename);
       if (!out.shared) { toast(`Saved ${filename} 🎬`); idle(); wrap.firstChild?.focus(); return; }
@@ -1182,6 +1187,7 @@ function recorder(label, title, job) {
       if (wrap.isConnected) { idle(); wrap.firstChild?.focus(); }
     } finally {
       recordings.delete(ctl);
+      until?.removeEventListener('abort', stop);
     }
   }
   idle();
@@ -1212,9 +1218,11 @@ function openLightbox(g, opener) {
   playBtn.onclick = () => (player.playing ? player.pause() : player.play());
   // Read the position first: pausing repaints and moves the scrubber back.
   scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
+  // Closing the lightbox by any path (button, Escape, backdrop) stops its clip.
+  const life = new AbortController();
   const clip = recorder('⬇ Download clip', 'About 6 seconds of video', () => ({
     segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
-  }));
+  }), life.signal);
   const box = h('dialog', { class: 'lightbox replay', 'aria-label': `Replay of ${g.word} by ${g.drawer?.name || 'someone'}` },
     h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) })),
     cv,
@@ -1226,6 +1234,7 @@ function openLightbox(g, opener) {
       h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' }))));
   box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
   box.addEventListener('close', () => {
+    life.abort();
     player.destroy();
     box.remove();
     opener?.focus();
