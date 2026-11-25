@@ -1198,7 +1198,8 @@ function openLightbox(g, opener) {
   scrub.max = String(Math.round(player.total));
   scrub.disabled = !player.total;
   playBtn.onclick = () => (player.playing ? player.pause() : player.play());
-  scrub.oninput = () => { player.pause(); player.seek(+scrub.value); };
+  // Read the position first: pausing repaints and moves the scrubber back.
+  scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
   const clip = recorder('⬇ Download clip', 'About 6 seconds of video', () => ({
     segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
   }));
