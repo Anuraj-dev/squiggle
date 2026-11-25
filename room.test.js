@@ -1068,6 +1068,26 @@ test('sentence guesses score; a list containing the answer stays private and spe
   expect(c.room.guessed.has(b.id)).toBe(true);
 });
 
+test('lists with a short-answer plural or a long answer stay private and spend a Limited attempt', () => {
+  for (const [answer, list] of [['cd', 'CDs or DVDs'], ['a dog with a red hat', 'a dog with a red hat or cat']]) {
+    const ctx = setup(3, { hints: 0, customWords: 'cd, a dog with a red hat' });
+    ctx.ss[0].do('start');
+    ctx.room.chaos = null;
+    ctx.room.guesserChaos = tw('limited');
+    const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+    drawer.act('choose', { i: ctx.room.choices.findIndex((c) => c.word === answer) });
+    expect(ctx.room.word).toBe(answer);
+    const [a, b] = ctx.ss.filter((s) => s !== drawer);
+    const ma = a.mark(), mb = b.mark();
+    a.act('chat', { text: list });
+    expect(a.chats(ma).map((m) => m.kind)).toEqual(['close']);
+    expect(b.chats(mb)).toEqual([]);
+    expect(drawer.chats(ma).filter((m) => m.text === list)).toEqual([]);
+    expect(ctx.room.guessBudget(ctx.room.players.get(a.id)).remaining).toBe(2);
+    expect(ctx.room.guessed.has(a.id)).toBe(false);
+  }
+});
+
 // Deals straight from a lobby room: each call is a new turn one second later.
 function deal(room, n = room.settings.wordChoices, avoid) {
   room.turnSeq++;
