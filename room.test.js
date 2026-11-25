@@ -1392,6 +1392,28 @@ test('finale: at most one per game; a reconnected or fresh drawer after it plays
   expect(ctx.ss[0].chats().filter((m) => /FINALE/.test(m.text))).toHaveLength(1);
 });
 
+test('finale: a finale drawer who leaves before picking passes the finale to the real last turn', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  expect(r.state).toBe('choosing');
+  const chooser = ctx.ss.find((s) => s.id === r.drawerId);
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const token = last.out.find((m) => m.t === 'welcome').token;
+  last.drop();
+  expect(r.finale).toBe(true);
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: last.name, token });
+  back.id = last.id;
+  chooser.do('leave');
+  expect(r.drawerId).toBe(back.id);
+  expect(r.finale).toBe(true);
+  back.act('choose', { i: 0 });
+  advance(r.timeLeft() + 1);
+  expect(r.reveal.finale).toBe(true);
+});
+
 test('finale: the planned last drawer leaving during reveal changes nothing', () => {
   const ctx = setup(4);
   ctx.ss[0].do('start');
@@ -1434,12 +1456,12 @@ test('MVP vote: end state only, not your own, one changeable vote each, ties sha
   const before = scores();
   a.do('vote', { id: byDrawer[a.id] });
   a.do('vote', { id: 999 });
-  expect(a.state().mvp).toEqual({ tally: {}, winners: [], mine: null });
+  expect(a.state().mvp).toEqual({ tally: {}, winners: [], mine: null, canVote: true });
   a.do('vote', { id: byDrawer[b.id] });
   b.do('vote', { id: byDrawer[c.id] });
   expect(c.state().mvp.winners.sort()).toEqual([byDrawer[b.id], byDrawer[c.id]].sort());
   c.do('vote', { id: byDrawer[b.id] });
-  expect(c.state().mvp).toEqual({ tally: { [byDrawer[b.id]]: 2, [byDrawer[c.id]]: 1 }, winners: [byDrawer[b.id]], mine: byDrawer[b.id] });
+  expect(c.state().mvp).toEqual({ tally: { [byDrawer[b.id]]: 2, [byDrawer[c.id]]: 1 }, winners: [byDrawer[b.id]], mine: byDrawer[b.id], canVote: true });
   a.do('vote', { id: byDrawer[c.id] }); // changing a vote moves it
   expect(a.state().mvp.tally).toEqual({ [byDrawer[b.id]]: 1, [byDrawer[c.id]]: 2 });
   a.do('vote', { id: null });
@@ -1471,6 +1493,7 @@ test('MVP vote: leaving drops the vote; fresh or post-grace joins cannot vote; a
   f.do('vote', { id: byDrawer[a.id] });
   expect(r.votes.size).toBe(0);
   expect(f.since(0, 'toast').at(-1).text).toMatch(/Only players/);
+  expect(f.state().mvp.canVote).toBe(false);
   // The artist reconnecting within grace is the same voter and still cannot vote for their own drawing.
   const tb = token(b);
   b.drop();

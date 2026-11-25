@@ -752,6 +752,9 @@ export class Room {
     const drawer = this.players.get(this.drawerId);
     const endMs = this.clockMs();
     this.beginPhase('reveal');
+    // Only a finale that was actually played uses up the game's one finale; a
+    // finale drawer who leaves before picking passes it on to the next turn.
+    if (this.finale) this.finaleSpent = true;
     if (is(this.guesserChaos, 'batches')) { this.batchReleased = true; this.publishCanvas(); }
     this.awardDrawer();
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.galleryAuthors.delete(this.gallery.shift().id);
@@ -793,14 +796,14 @@ export class Room {
   // at the start of the turn, or later (while choosing or drawing) when the
   // planned last drawer leaves or drops. A late upgrade doubles points already
   // scored this turn, so every finale point is 2× however it became the
-  // finale. Never downgraded, and once per game: if a dropped player returns
-  // and draws after it, that turn scores normally. A reveal is settled, so a
+  // finale. Never downgraded, and once per game (spent when a finale turn
+  // reaches its reveal): if a dropped player returns and draws after it, that
+  // turn scores normally. A reveal is settled, so a
   // departure then changes nothing.
   refreshFinale() {
     if (this.finale || this.finaleSpent || !this.drawerId || !this.lastTurn()) return false;
     if (this.state !== 'choosing' && this.state !== 'drawing') return false;
     this.finale = true;
-    this.finaleSpent = true;
     for (const [id, x] of this.guessed) {
       const q = this.players.get(id);
       if (q) q.score += x.pts * (FINALE_MULT - 1);
@@ -817,7 +820,7 @@ export class Room {
     for (const id of this.votes.values()) tally[id] = (tally[id] || 0) + 1;
     const top = Math.max(0, ...Object.values(tally));
     const winners = top ? this.gallery.filter((g) => tally[g.id] === top).map((g) => g.id) : [];
-    return { tally, winners, mine: this.votes.get(p.token) ?? null };
+    return { tally, winners, mine: this.votes.get(p.token) ?? null, canVote: this.voters.has(p.token) };
   }
 
   vote(p, id) {

@@ -462,7 +462,9 @@ function present() {
 }
 // Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
+  // A fill next to a decoy samples the board without decoys in a full repaint,
+  // so it repaints too instead of sampling the redrawn decoy.
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel') || (s.tool === 'fill' && strokes.some((x) => x.decoy))) markDirty();
   else drawLiveStroke(ctx, strokes, s, from, renderOpts());
 }
 
@@ -1321,7 +1323,7 @@ function renderEnd(fresh) {
         h('button', { class: 'thumb-btn', 'aria-label': `Replay drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
           h('span', {}, h('span', { class: 'w', text: g.word }), h('br'), h('span', { class: 'by', text: by })),
-          gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, title: own ? 'Your own drawing' : 'Vote for this drawing',
+          gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, 'data-own': own ? '1' : null, title: own ? 'Your own drawing' : 'Vote for this drawing',
             onclick: () => send('vote', { id: S.mvp?.mine === g.id ? null : g.id }) }) : null,
           h('button', { class: 'dl', text: '⬇', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl })));
     })),
@@ -1355,6 +1357,10 @@ function syncVotes(modal) {
     fig.classList.toggle('is-mvp', mvp.winners.includes(id));
     const b = fig.querySelector('.vote');
     if (!b) continue;
+    // Only players of the finished match vote; a newcomer just watches the tally.
+    const locked = !!b.dataset.own || mvp.canVote === false;
+    b.disabled = locked;
+    if (!b.dataset.own) b.title = locked ? 'Only players from this game can vote' : 'Vote for this drawing';
     b.textContent = `${mine ? '✓' : '🏆'} ${n}`;
     b.setAttribute('aria-pressed', String(mine));
     b.setAttribute('aria-label', `${mine ? 'Remove your vote for' : 'Vote for'} this drawing, ${n} vote${n === 1 ? '' : 's'}`);
