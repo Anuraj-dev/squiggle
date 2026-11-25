@@ -2,7 +2,7 @@
 import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, MEMORY_STROKES,
   INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   recentInkCenter, macroView, scoreMult, DIFF_MULT } from './shared.js';
-import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
+import { applyStroke, drawLiveStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { renderShareCard } from './share.js';
 import { ReplayPlayer, SPEEDS, recordingSupported, recordSegments, drawingSegments, reelSegments, deliverClip, clipName } from './replay.js';
 import { createMusic } from './music.js';
@@ -462,8 +462,8 @@ function present() {
 }
 // Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || timed() || liveChaos('memory') || guesserView('pixel') || (s.tool === 'eraser' && strokes.some((x) => x.decoy))) markDirty();
-  else drawStroke(ctx, s, from, renderOpts());
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
+  else drawLiveStroke(ctx, strokes, s, from, renderOpts());
 }
 
 let tool = 'pen', stampShape = 'circle', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null, rawLast = null;

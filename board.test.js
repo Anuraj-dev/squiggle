@@ -2,7 +2,7 @@
 // small recording 2D context (tracks the transform and a pixel buffer).
 import { expect, test } from 'bun:test';
 import { W, H, STAMP_SHAPES } from './public/shared.js';
-import { applyStroke, drawStroke, floodRegion, paintPaper, paintThumb, setCanvasFactory, views } from './public/board.js';
+import { applyStroke, drawLiveStroke, drawStroke, floodRegion, paintPaper, paintThumb, setCanvasFactory, views } from './public/board.js';
 
 class FakeCtx {
   constructor(w, h) {
@@ -180,4 +180,21 @@ test('Decoy Doodle renders decoys again after erasers so they cannot be erased',
   const eraser = { id: 'p:1', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
   paintPaper(c, [decoy, eraser]);
   expect(c.strokes).toEqual(['#1d1b1a', '#ffffff', '#1d1b1a']);
+});
+
+test('live incremental strokes leave decoys on top, as a full repaint does', () => {
+  const decoy = { id: 'decoy:0', by: null, tool: 'line', size: 10, color: '#1d1b1a', pts: [10, 10, 50, 50], decoy: true };
+  const white = { id: 'p:1', by: 'p', tool: 'line', size: 20, color: '#ffffff', pts: [10, 10, 50, 50] };
+  const eraser = { id: 'p:2', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
+  const strokes = [decoy, white, eraser];
+  const live = new FakeCtx(W, H), full = new FakeCtx(W, H);
+  drawLiveStroke(live, strokes, decoy);
+  drawLiveStroke(live, strokes, white);
+  drawLiveStroke(live, strokes, eraser);
+  paintPaper(full, strokes);
+  expect(live.strokes.at(-1)).toBe('#1d1b1a');
+  expect(full.strokes.at(-1)).toBe('#1d1b1a');
+  // A decoy itself is not drawn twice by the live path.
+  expect(live.strokes.slice(0, 1)).toEqual(['#1d1b1a']);
+  expect(live.strokes[1]).toBe('#ffffff');
 });

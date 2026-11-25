@@ -131,6 +131,13 @@ export function paintPaper(c, strokes, opts = {}) {
   for (const s of decoys) drawStroke(c, s, 0, opts);
 }
 
+// Incremental counterpart of paintPaper: paints one new stroke or segment, then
+// the decoys again on top, so live, resync and replay stack them the same way.
+export function drawLiveStroke(c, strokes, s, from = 0, opts = {}) {
+  drawStroke(c, s, from, opts);
+  if (!s.decoy) for (const d of strokes) if (d.decoy) drawStroke(c, d, 0, opts);
+}
+
 let thumbPaper = null;
 // Thumbnails rasterise at full resolution on one reusable canvas, then scale.
 export function paintThumb(tctx, w, h, strokes, opts = {}) {
