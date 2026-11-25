@@ -1211,12 +1211,25 @@ function openLightbox(g, opener) {
   const player = new ReplayPlayer(cv, g.strokes || [], (ms, playing, total) => {
     scrub.value = String(Math.round(ms));
     time.textContent = `${fmtSec(ms)} / ${fmtSec(total)}`;
-    playBtn.textContent = playing ? '⏸ Pause' : ms >= total ? '↺ Replay' : '▶ Play';
-    playBtn.setAttribute('aria-label', playing ? 'Pause replay' : 'Play replay');
+    playBtn.textContent = playing ? '⏸️ Pause' : ms >= total ? '🔁 Replay' : '▶️ Play';
+    playBtn.setAttribute('aria-label', playing ? 'Pause replay' : ms >= total ? 'Replay from the start' : 'Play replay');
   }, g.endMs);
   scrub.max = String(Math.round(player.total));
   scrub.disabled = !player.total;
-  playBtn.onclick = () => (player.playing ? player.pause() : player.play());
+  const toggle = () => (player.playing ? player.pause() : player.play());
+  playBtn.onclick = toggle;
+  // Tapping the drawing itself plays or pauses, like a video.
+  cv.onclick = toggle;
+  // Step through the gallery without going back to the grid. Closing returns
+  // focus to the thumbnail of the drawing that was showing last.
+  const at = gallery.indexOf(g);
+  const step = (d) => {
+    const next = gallery[at + d];
+    if (!next) return;
+    box.close();
+    openLightbox(next, document.querySelector(`.gal[data-id="${next.id}"] .thumb-btn`) || opener);
+  };
+  const nav = (d, text, label) => h('button', { class: 'rp-nav', type: 'button', text, 'aria-label': label, disabled: !gallery[at + d], onclick: () => step(d) });
   // Read the position first: pausing repaints and moves the scrubber back.
   scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
   // Closing the lightbox by any path (button, Escape, backdrop) stops its clip.
@@ -1225,8 +1238,12 @@ function openLightbox(g, opener) {
     segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
   }), life.signal);
   const box = h('dialog', { class: 'lightbox replay', 'aria-label': `Replay of ${g.word} by ${g.drawer?.name || 'someone'}` },
-    h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) })),
-    cv,
+    h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) }),
+      at >= 0 && gallery.length > 1 ? h('span', { class: 'rp-count', text: `${at + 1} / ${gallery.length}` }) : null),
+    h('div', { class: 'rp-stage' },
+      at >= 0 && gallery.length > 1 ? nav(-1, '‹', 'Previous drawing') : null,
+      cv,
+      at >= 0 && gallery.length > 1 ? nav(1, '›', 'Next drawing') : null),
     h('div', { class: 'rp-controls' },
       playBtn,
       h('div', { class: 'rp-speed', role: 'group', 'aria-label': 'Replay speed' }, speedBtns),
@@ -1234,6 +1251,14 @@ function openLightbox(g, opener) {
     h('div', { class: 'rp-actions' }, clip,
       h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' }))));
   box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
+  // Space plays/pauses and ←/→ step drawings, except where the key already
+  // means something (the scrubber's arrows, a focused button's Space).
+  box.addEventListener('keydown', (e) => {
+    if (e.target === scrub || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); toggle(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+  });
   box.addEventListener('close', () => {
     life.abort();
     player.destroy();

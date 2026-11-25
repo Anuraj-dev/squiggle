@@ -595,7 +595,15 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .end-actions .rec .btn.ghost, .rp-actions .rec .btn.ghost { min-width: 0; }
 .end-actions .rec-label, .end-actions .rec-pct { color: var(--ink); }
 
-.lightbox.replay canvas { width: min(1000px, 96vw, calc((100dvh - 15rem) * 4 / 3)); }
+.lightbox.replay canvas { width: min(1000px, calc(96vw - 7rem), calc((100dvh - 15rem) * 4 / 3)); cursor: pointer; }
+.rp-stage { display: flex; align-items: center; gap: 0.75rem; }
+.rp-nav {
+  flex: none; width: 3rem; height: 3rem; border: var(--line); border-radius: 50%; background: var(--card); box-shadow: var(--shadow-sm);
+  font-size: 2rem; font-weight: 800; line-height: 1; display: grid; place-items: center; padding: 0 0 0.2rem; cursor: pointer; transition: transform 0.1s;
+}
+.rp-nav:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
+.rp-nav:disabled { opacity: 0.35; cursor: default; box-shadow: none; }
+.rp-count { font-weight: 700; font-variant-numeric: tabular-nums; padding: 0.05rem 0.55rem; border: 2px solid currentColor; border-radius: 999px; font-size: 0.8rem; }
 .rp-head, .rp-controls, .rp-actions {
   display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: center; width: min(1000px, 96vw);
 }
@@ -613,3 +621,12 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .rp-time { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.85rem; min-width: 7.5ch; text-align: right; }
 .rp-actions .rec-label, .rp-actions .rec-pct { color: #fffdf8; }
 .rp-actions form { margin: 0; }
+/* Phones: the arrows sit over the drawing's edges so it keeps the full width. */
+@media (max-width: 560px) {
+  .rp-stage { position: relative; }
+  .lightbox.replay canvas { width: min(96vw, calc((100dvh - 15rem) * 4 / 3)); }
+  .rp-nav { position: absolute; top: 50%; translate: 0 -50%; width: 2.4rem; height: 2.4rem; font-size: 1.6rem; z-index: 1; }
+  .rp-nav:first-child { left: 0.4rem; }
+  .rp-nav:last-child { right: 0.4rem; }
+  .rp-nav:disabled { display: none; }
+}
