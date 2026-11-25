@@ -9,7 +9,7 @@ import {
   CHAOS_LEVELS, CHAOS_RATE, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
   stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
-  guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
+  guesserPts, drawerPts, allBonus, scoreMult, tiedRanking, FINALE_MULT,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
 } from './public/shared.js';
 
@@ -49,6 +49,34 @@ function take(p, key, cap, perSec) {
   if (b.n < 1) return false;
   b.n -= 1;
   return true;
+}
+
+// Up to 3 public wrong guesses for the reveal: the guess most players typed
+// first (by normalised text), then the longest; at most one per player; never a
+// "close" guess or one that mentions the answer. Each guess is shown as its
+// first player typed it.
+export function recapGuesses(list, word, max = 3) {
+  const groups = new Map();
+  list.forEach((g, i) => {
+    const key = norm(g.text);
+    if (!key || g.close || mentionsAnswer(g.text, word) || matchesAnswer(g.text, word)) return;
+    const grp = groups.get(key) || { text: g.text, ids: [], first: i };
+    if (!grp.ids.includes(g.id)) grp.ids.push(g.id);
+    groups.set(key, grp);
+  });
+  const ranked = [...groups.values()].sort((a, b) => b.ids.length - a.ids.length || b.text.length - a.text.length || a.first - b.first);
+  const out = [], used = new Set();
+  ranked.forEach((grp, k) => {
+    if (out.length >= max) return;
+    // Credit the player with the fewest other guesses still to place, so a
+    // popular guess does not use up someone whose only guess comes later.
+    const later = (x) => ranked.slice(k + 1).filter((o) => o.ids.includes(x)).length;
+    const id = grp.ids.filter((x) => !used.has(x)).sort((a, b) => later(a) - later(b))[0];
+    if (id == null) return;
+    used.add(id);
+    out.push({ text: grp.text, by: id, n: grp.ids.length });
+  });
+  return out;
 }
 
 export class Room {
@@ -104,6 +132,16 @@ export class Room {
     this.turnEligible = [];
     this.drawnThisRound = new Set();
     this.rerolled = false;
+    // Public wrong guesses this turn, for the reveal recap: { id, text, close }.
+    this.wrongGuesses = [];
+    // The last turn of the match scores 2×. Once announced it is never taken back.
+    this.finale = false;
+    this.galleryN = 0;
+    // Gallery MVP: voter id -> gallery drawing id. End state only.
+    this.votes = new Map();
+    // Wins tonight, keyed by reconnect token so a win follows the player across
+    // reconnects and survives rematches: token -> { name, n }.
+    this.wins = new Map();
     this.resetCanvas();
   }
 
@@ -209,6 +247,9 @@ export class Room {
       spectating: drawing && p.id !== this.drawerId && !this.turnEligible.includes(p.id),
       reveal: this.state === 'reveal' ? this.reveal : null,
       end: this.state === 'end' ? this.endData : null,
+      finale: this.finale,
+      mvp: this.state === 'end' ? this.mvpFor(p) : null,
+      wins: this.winsList(),
       players: this.order.map((id) => this.players.get(id)).filter(Boolean).map((q) => ({
         id: q.id, name: q.name, avatar: q.avatar, color: q.color, score: q.score, connected: q.connected,
         guessed: this.guessed.has(q.id), streak: q.streak,
@@ -398,6 +439,7 @@ export class Room {
     }
     for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false });
     this.gallery = [];
+    this.votes.clear();
     this.used.clear();
     this.round = 0;
     this.chaos = null;
@@ -443,7 +485,7 @@ export class Room {
     this.beginPhase('choosing');
     Object.assign(this, {
       drawerId: id, word: null, diff: null, revealed: [], hintPlan: [], reveal: null,
-      drawerAward: 0, speedup: false, rerolled: false, turnEligible: [],
+      drawerAward: 0, speedup: false, rerolled: false, turnEligible: [], wrongGuesses: [], finale: false,
     });
     this.resetCanvas();
     this.guessed.clear();
@@ -451,6 +493,7 @@ export class Room {
     this.inkUsed = 0;
     this.strokeUsed = 0;
     this.guessBudgets.clear();
+    this.refreshFinale();
     this.rollChaos();
     this.choices = this.pickWords(this.settings.wordChoices);
     this.phase(CHOOSE_MS, () => this.choose(Math.floor(Math.random() * this.choices.length)));
@@ -529,7 +572,7 @@ export class Room {
   awardDrawer() {
     const total = drawerPts({
       solved: this.guessed.size, eligible: this.turnEligible.length, diff: this.diff,
-      chaos: [this.chaos, this.guesserChaos].filter(Boolean), all: this.allSolved(),
+      chaos: [this.chaos, this.guesserChaos].filter(Boolean), all: this.allSolved(), finale: this.finale,
     });
     const drawer = this.players.get(this.drawerId);
     if (drawer) drawer.score += total - this.drawerAward;
@@ -578,6 +621,7 @@ export class Room {
       this.scheduleChallenges();
     }
     this.broadcast('chat', { kind: 'guess', from: p.id, text });
+    if (this.wrongGuesses.length < 500) this.wrongGuesses.push({ id: p.id, text, close: !!close });
     if (close) {
       p.close++;
       this.send(p, 'chat', { kind: 'close', text: `“${text}” is sooo close!` });
@@ -593,7 +637,7 @@ export class Room {
     const first = this.guessed.size === 0;
     p.streak++;
     p.bestStreak = Math.max(p.bestStreak, p.streak);
-    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: [this.chaos, this.guesserChaos].filter(Boolean), streak: p.streak });
+    const pts = guesserPts({ elapsed, scoreLen: this.scoreLen, diff: this.diff, chaos: [this.chaos, this.guesserChaos].filter(Boolean), streak: p.streak, finale: this.finale });
     this.guessed.set(p.id, { pts, ms: elapsed, name: p.name });
     p.score += pts;
     if (p.fastest == null || elapsed < p.fastest) p.fastest = elapsed;
@@ -622,6 +666,7 @@ export class Room {
     this.awardDrawer();
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
     if (this.strokes.length) this.gallery.push({
+      id: ++this.galleryN,
       word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos,
       drawer: drawer ? { id: drawer.id, name: drawer.name, avatar: drawer.avatar, color: drawer.color } : null,
     });
@@ -629,17 +674,74 @@ export class Room {
       const q = this.players.get(id);
       if (q && !this.guessed.has(id)) q.streak = 0;
     }
-    const deltas = [...this.guessed.entries()].map(([id, x]) => ({ id, name: x.name, pts: x.pts, ms: x.ms }));
-    if (drawer) deltas.unshift({ id: drawer.id, name: drawer.name, pts: this.drawerAward, drawer: true });
     const modes = [this.chaos, this.guesserChaos].filter(Boolean);
     this.reveal = {
-      word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos,
+      word: this.word, reason, deltas: this.revealDeltas(), artistChaos: this.chaos, guesserChaos: this.guesserChaos,
       diff: this.diff, mult: Math.round(scoreMult(this.diff, modes) * 100) / 100,
-      allBonus: reason === 'all' ? allBonus(this.diff, modes) : 0,
+      allBonus: reason === 'all' ? allBonus(this.diff, modes) * (this.finale ? FINALE_MULT : 1) : 0,
+      finale: this.finale, recap: recapGuesses(this.wrongGuesses, this.word),
     };
     this.phase(REVEAL_MS, () => this.nextTurn());
     this.broadcast('sfx', { s: reason === 'all' ? 'allgot' : 'reveal' });
     this.updatePause();
+  }
+
+  revealDeltas() {
+    const drawer = this.players.get(this.drawerId);
+    const deltas = [...this.guessed.entries()].map(([id, x]) => ({ id, name: x.name, pts: x.pts, ms: x.ms }));
+    if (drawer) deltas.unshift({ id: drawer.id, name: drawer.name, pts: this.drawerAward, drawer: true });
+    return deltas;
+  }
+
+  // True when nobody connected is left to draw after this turn in the final round.
+  lastTurn() {
+    return this.round >= this.settings.rounds && !this.queue.some((id) => this.players.get(id)?.connected);
+  }
+
+  // Marks the current turn as the finale once it is known to be the last one:
+  // at the start of the turn, or later when the planned last drawer leaves or
+  // drops. A late upgrade doubles points already scored this turn, so every
+  // finale point is 2× however it became the finale. Never downgraded: if a
+  // dropped player returns and draws after it, that turn is a finale too.
+  refreshFinale() {
+    if (this.finale || !this.inPlay() || !this.drawerId || !this.lastTurn()) return false;
+    this.finale = true;
+    for (const [id, x] of this.guessed) {
+      const q = this.players.get(id);
+      if (q) q.score += x.pts * (FINALE_MULT - 1);
+      x.pts *= FINALE_MULT;
+    }
+    if (this.state !== 'choosing') this.awardDrawer();
+    if (this.state === 'reveal' && this.reveal) {
+      Object.assign(this.reveal, { finale: true, deltas: this.revealDeltas(), allBonus: this.reveal.allBonus * FINALE_MULT });
+    }
+    this.system('🔥 FINALE · 2× points: last turn of the game!', 'warn');
+    return true;
+  }
+
+  // Live MVP tally for one viewer: { tally: { drawingId: votes }, winners, mine }.
+  mvpFor(p) {
+    const tally = {};
+    for (const id of this.votes.values()) tally[id] = (tally[id] || 0) + 1;
+    const top = Math.max(0, ...Object.values(tally));
+    const winners = top ? this.gallery.filter((g) => tally[g.id] === top).map((g) => g.id) : [];
+    return { tally, winners, mine: this.votes.get(p.id) ?? null };
+  }
+
+  vote(p, id) {
+    if (this.state !== 'end') return;
+    if (id == null) { this.votes.delete(p.id); return this.sync(); }
+    const g = this.gallery.find((x) => x.id === id);
+    if (!g) return;
+    if (g.drawer?.id === p.id) return this.send(p, 'toast', { text: 'Vote for someone else’s drawing' });
+    this.votes.set(p.id, id);
+    this.sync();
+  }
+
+  winsList() {
+    const name = (token, w) => [...this.players.values()].find((q) => q.token === token)?.name || w.name;
+    return [...this.wins.entries()].map(([token, w]) => ({ name: name(token, w), n: w.n }))
+      .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
   }
 
   endGame() {
@@ -660,7 +762,15 @@ export class Room {
     award('🤏', 'Sooo Close', close, (p) => p.name, close.length ? `${close[0].close} near-miss${close[0].close > 1 ? 'es' : ''}` : '');
     this.beginPhase('end');
     this.endData = { ranking: tiedRanking(players), awards };
-    Object.assign(this, { drawerId: null, word: null, chaos: null, guesserChaos: null, turnEligible: [] });
+    this.votes.clear();
+    // Every top scorer of a finished game gets a win; a game nobody scored in has no winner.
+    for (const r of this.endData.ranking) {
+      const q = this.players.get(r.id);
+      if (r.rank !== 1 || r.score <= 0 || !q) continue;
+      const w = this.wins.get(q.token) || { name: q.name, n: 0 };
+      this.wins.set(q.token, { name: q.name, n: w.n + 1 });
+    }
+    Object.assign(this, { drawerId: null, word: null, chaos: null, guesserChaos: null, turnEligible: [], finale: false });
     this.resetCanvas();
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
     this.broadcast('gallery', { gallery: this.gallery });
@@ -671,8 +781,9 @@ export class Room {
   toLobby(msg) {
     this.beginPhase('lobby');
     Object.assign(this, {
-      drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [],
+      drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [], finale: false,
     });
+    this.votes.clear();
     this.resetCanvas();
     this.guessed.clear();
     this.lateSolved.clear();
@@ -696,6 +807,7 @@ export class Room {
 
   onDisconnect() {
     this.migrateHost();
+    this.refreshFinale();
     this.updatePause();
   }
 
@@ -714,6 +826,7 @@ export class Room {
     }
     this.migrateHost();
     if (this.inPlay() && this.players.size < 2) return this.toLobby('Not enough players left — back to the lobby.');
+    if (p.id !== this.drawerId) this.refreshFinale();
     if (p.id === this.drawerId && this.state === 'choosing') return this.nextTurn();
     if (p.id === this.drawerId && this.state === 'drawing') return this.endTurn('left');
     if (this.state === 'drawing' && this.allSolved()) return this.endTurn('all');
@@ -941,6 +1054,7 @@ const handlers = {
     if (target && target.id !== p.id && p.id === room.hostId) room.kick(target);
   },
   pause(room, p, m) { if (p.id === room.hostId) room.setHostPaused(m.on === true); },
+  vote(room, p, m) { room.vote(p, m.id == null ? null : Number(m.id)); },
   ping(room, p) { room.send(p, 'pong'); },
   leave(room, p) {
     p.connected = false;

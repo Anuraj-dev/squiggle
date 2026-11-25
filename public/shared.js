@@ -220,19 +220,22 @@ export function timeFrac(elapsed, scoreLen) {
 // the turn, so a speedup that shortens the deadline never changes the curve.
 // No first-guesser bonus: a 1 ms tie must not be worth points.
 // chaos is the array of active modes for the turn (see scoreMult).
-export function guesserPts({ elapsed, scoreLen, diff, chaos, streak }) {
+// `finale` (the last turn of the match) doubles the whole award, chaos and streak included.
+export const FINALE_MULT = 2;
+export function guesserPts({ elapsed, scoreLen, diff, chaos, streak, finale }) {
   const streakN = Math.min(3, Math.max(0, (streak || 1) - 1));
-  return Math.round((100 + 200 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 10;
+  const pts = Math.round((100 + 200 * timeFrac(elapsed, scoreLen)) * scoreMult(diff, chaos)) + streakN * 10;
+  return finale ? pts * FINALE_MULT : pts;
 }
 
 // eligible is the number of guessers present when drawing started; it does
 // not shrink when someone leaves, so the drawer's share stays stable. `all`
 // means every guesser still in the room solved it, which earns the bonus.
-export function drawerPts({ solved, eligible, diff, chaos, all }) {
+export function drawerPts({ solved, eligible, diff, chaos, all, finale }) {
   if (!eligible) return 0;
   const frac = Math.max(0, Math.min(1, solved / eligible));
   const bonus = all ? 100 : 0;
-  return Math.round((200 * frac + bonus) * scoreMult(diff, chaos));
+  return Math.round((200 * frac + bonus) * scoreMult(diff, chaos)) * (finale ? FINALE_MULT : 1);
 }
 
 export function allBonus(diff, chaos) {

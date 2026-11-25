@@ -281,3 +281,12 @@ test('cleanChaosIds keeps known ids in canonical order and treats non-lists as e
   expect(cleanChaosIds(undefined)).toEqual(CHAOS_IDS);
   expect(cleanChaosIds('fog')).toEqual(CHAOS_IDS);
 });
+
+test('finale doubles the whole guesser and drawer award, chaos and streak included', () => {
+  const chaos = [{ id: 'mirror', seed: 1 }];
+  const g = { elapsed: 12000, scoreLen: 80000, diff: 'hard', chaos, streak: 3 };
+  expect(guesserPts({ ...g, finale: true })).toBe(guesserPts(g) * 2);
+  const d = { solved: 2, eligible: 3, diff: 'medium', chaos, all: false };
+  expect(drawerPts({ ...d, finale: true })).toBe(drawerPts(d) * 2);
+  expect(drawerPts({ ...d, eligible: 0, finale: true })).toBe(0);
+});
