@@ -1,13 +1,14 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
-import { clock, onMessage, onClose, rooms, setWordHistory, recapGuesses } from './game.js';
+import { clock, onMessage, onClose, rooms, setWordHistory, flushWordHistory, recapGuesses } from './game.js';
 import { WordHistory } from './history.js';
 import { DECK_BY_ID, DECK_CATALOG } from './decks.js';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NEW_WORDS } from './words-new.js';
+import { canonKey } from './words.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
@@ -1068,6 +1069,26 @@ test('sentence guesses score; a list containing the answer stays private and spe
   expect(c.room.guessed.has(b.id)).toBe(true);
 });
 
+test('lists with a short-answer plural or a long answer stay private and spend a Limited attempt', () => {
+  for (const [answer, list] of [['cd', 'CDs or DVDs'], ['a dog with a red hat', 'a dog with a red hat or cat']]) {
+    const ctx = setup(3, { hints: 0, customWords: 'cd, a dog with a red hat' });
+    ctx.ss[0].do('start');
+    ctx.room.chaos = null;
+    ctx.room.guesserChaos = tw('limited');
+    const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+    drawer.act('choose', { i: ctx.room.choices.findIndex((c) => c.word === answer) });
+    expect(ctx.room.word).toBe(answer);
+    const [a, b] = ctx.ss.filter((s) => s !== drawer);
+    const ma = a.mark(), mb = b.mark();
+    a.act('chat', { text: list });
+    expect(a.chats(ma).map((m) => m.kind)).toEqual(['close']);
+    expect(b.chats(mb)).toEqual([]);
+    expect(drawer.chats(ma).filter((m) => m.text === list)).toEqual([]);
+    expect(ctx.room.guessBudget(ctx.room.players.get(a.id)).remaining).toBe(2);
+    expect(ctx.room.guessed.has(a.id)).toBe(false);
+  }
+});
+
 // Deals straight from a lobby room: each call is a new turn one second later.
 function deal(room, n = room.settings.wordChoices, avoid) {
   room.turnSeq++;
@@ -1131,9 +1152,23 @@ test('custom words are one card per deal, rotate by recency and are never writte
   for (const w of custom) expect(counts.get(w) / 200).toBeLessThan(0.25);
   history.flush();
   const saved = JSON.parse(readFileSync(path, 'utf8'));
-  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, w)).toBe(!custom.includes(w));
+  // Disk keys are canonical ("t-shirt" is saved as "t shirt").
+  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, canonKey(w))).toBe(!custom.includes(w));
   for (const w of custom) expect(saved).not.toHaveProperty(w);
   expect(Object.keys(saved).length).toBeGreaterThan(10);
+});
+
+test('flushWordHistory writes a pending debounced save immediately (shutdown path)', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'squiggle-room-')), 'h.json');
+  setWordHistory(new WordHistory({ path, valid: null, delay: 1e9 }));
+  flushWordHistory(); // nothing pending: no file
+  expect(existsSync(path)).toBe(false);
+  const ctx = setup(2, { customOnly: false, customWords: '' });
+  ctx.ss[0].do('start');
+  expect(existsSync(path)).toBe(false);
+  flushWordHistory();
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  expect(Object.keys(saved).length).toBe(ctx.room.choices.length);
 });
 
 test('word memory survives a rematch and dealt cards come in shuffled order', () => {
@@ -1237,15 +1272,19 @@ test('recap: most repeated wrong guess first, then longest; one per player; no c
 });
 
 test('reveal carries the wrong-guess recap; close guesses stay out', () => {
-  const ctx = setup(3);
-  const { drawer, guessers: [b, c] } = startDrawing(ctx);
+  const ctx = setup(4);
+  const { drawer, guessers: [b, c, d] } = startDrawing(ctx);
   b.act('chat', { text: 'sad potato' });
   c.act('chat', { text: 'sad potato' });
   c.act('chat', { text: 'toilet' });
-  b.act('chat', { text: ctx.room.word.slice(0, -1) }); // a near typo, "sooo close"
+  // A near typo ("sooo close") from a player with no other guess: only the
+  // close rule can keep it out of the recap.
+  d.act('chat', { text: ctx.room.word.slice(0, -1) });
+  expect(ctx.room.wrongGuesses.at(-1)).toMatchObject({ id: d.id, close: true });
   drawer.act('skip');
   expect(ctx.room.reveal.recap.map((r) => r.text)).toEqual(['sad potato', 'toilet']);
   expect(new Set(ctx.room.reveal.recap.map((r) => r.by)).size).toBe(2);
+  expect(ctx.room.reveal.recap.some((r) => r.by === d.id)).toBe(false);
   expect(b.state().reveal.recap.length).toBe(2);
   advance(REVEAL_MS);
   expect(ctx.room.wrongGuesses).toEqual([]);
@@ -1316,6 +1355,69 @@ test('finale: a last drawer who drops also makes the current turn the finale', (
   expect(r.finale).toBe(true);
 });
 
+test('finale: at most one per game; a reconnected or fresh drawer after it plays at normal points', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const token = last.out.find((m) => m.t === 'welcome').token;
+  last.drop();
+  expect(r.finale).toBe(true);
+  // Back within grace: still queued for this round, but the finale is spent.
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: last.name, token });
+  back.id = last.id;
+  const fresh = sock('F');
+  fresh.do('join', { room: ctx.code, name: 'F' });
+  fresh.id = fresh.out.find((m) => m.t === 'welcome').id;
+  drawer.act('skip');
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(back.id);
+  expect(r.finale).toBe(false);
+  back.act('choose', { i: 0 });
+  const guesser = ctx.ss.find((s) => s.id !== back.id && s !== last);
+  const before = r.players.get(guesser.id).score;
+  advance(10000);
+  guesser.act('chat', { text: r.word });
+  const modes = [r.chaos, r.guesserChaos].filter(Boolean);
+  expect(r.players.get(guesser.id).score - before).toBe(guesserPts({ elapsed: 10000, scoreLen: r.scoreLen, diff: r.diff, chaos: modes, streak: 1 }));
+  back.act('skip'); // ignored: someone solved, so end by time
+  advance(r.timeLeft() + 1);
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(fresh.id);
+  expect(r.finale).toBe(false);
+  expect(ctx.ss[0].chats().filter((m) => /FINALE/.test(m.text))).toHaveLength(1);
+});
+
+test('finale: the planned last drawer leaving during reveal changes nothing', () => {
+  const ctx = setup(4);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const b = ctx.ss.find((s) => s !== drawer && s !== last && r.turnEligible.includes(s.id) && s.id !== r.queue[0]);
+  advance(5000);
+  b.act('chat', { text: r.word });
+  advance(r.timeLeft() + 1);
+  expect(r.state).toBe('reveal');
+  const scores = [...r.players.values()].map((p) => p.score);
+  const reveal = structuredClone(r.reveal);
+  last.do('leave');
+  expect(r.finale).toBe(false);
+  expect(r.reveal).toEqual(reveal);
+  expect(r.reveal.allBonus).toBe(0);
+  expect([...r.players.values()].map((p) => p.score)).toEqual(scores.filter((_, i) => i !== ctx.ss.indexOf(last)));
+  expect(ctx.ss[0].chats().some((m) => /FINALE/.test(m.text))).toBe(false);
+  advance(REVEAL_MS);
+  expect(r.state).toBe('end');
+});
+
 test('MVP vote: end state only, not your own, one changeable vote each, ties share, no points', () => {
   const ctx = setup(3);
   const [a, b, c] = ctx.ss;
@@ -1347,6 +1449,53 @@ test('MVP vote: end state only, not your own, one changeable vote each, ties sha
   expect(r.votes.size).toBe(0);
   a.do('vote', { id: byDrawer[b.id] });
   expect(r.votes.size).toBe(0);
+});
+
+test('MVP vote: leaving drops the vote; fresh or post-grace joins cannot vote; a reconnected artist still cannot self-vote; tokens stay private', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  a.do('start');
+  const byDrawer = {};
+  for (let i = 0; i < 3; i++) byDrawer[drawAndSkip(ctx).id] = ctx.room.gallery.at(-1).id;
+  const r = ctx.room;
+  expect(r.state).toBe('end');
+  const token = (s) => s.out.find((m) => m.t === 'welcome').token;
+  // A leaver's vote is removed from the tally.
+  c.do('vote', { id: byDrawer[a.id] });
+  expect(a.state().mvp.tally).toEqual({ [byDrawer[a.id]]: 1 });
+  c.do('leave');
+  expect(a.state().mvp.tally).toEqual({});
+  // A fresh join at the end screen cannot vote.
+  const f = sock('F');
+  f.do('join', { room: ctx.code, name: 'F' });
+  f.do('vote', { id: byDrawer[a.id] });
+  expect(r.votes.size).toBe(0);
+  expect(f.since(0, 'toast').at(-1).text).toMatch(/Only players/);
+  // The artist reconnecting within grace is the same voter and still cannot vote for their own drawing.
+  const tb = token(b);
+  b.drop();
+  const b2 = sock('B2');
+  b2.do('join', { room: ctx.code, name: 'B', token: tb });
+  b2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(0);
+  b2.do('vote', { id: byDrawer[a.id] });
+  expect(b2.state().mvp.mine).toBe(byDrawer[a.id]);
+  // After the grace window a rejoin is a new player with a new token: no vote.
+  const ta = token(a);
+  a.drop();
+  advance(GAME_GRACE + 1);
+  expect(r.players.has(a.id)).toBe(false);
+  const a2 = sock('A2');
+  a2.do('join', { room: ctx.code, name: 'A', token: ta });
+  expect(a2.out.find((m) => m.t === 'welcome').token).not.toBe(ta);
+  a2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(1);
+  // No reconnect token reaches any client in snapshots or the gallery.
+  const tokens = [...r.players.values()].map((p) => p.token).concat(ta, tb, token(c));
+  for (const s of [a, b, c, f, b2, a2]) {
+    const seen = JSON.stringify(s.out.filter((m) => m.t !== 'welcome'));
+    for (const t of tokens) expect(seen).not.toContain(t);
+  }
 });
 
 test('MVP vote is ignored before the game ends', () => {

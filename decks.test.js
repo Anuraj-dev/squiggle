@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { DECKS, DECK_WARNINGS, DECK_IDS, DEFAULT_DECKS, ALL_DECK_KEYS, TIERS, buildDecks, cleanDeckIds } from './decks.js';
-import { WORDS, canonKey, matchesAnswer, singulars, stripWrapper } from './words.js';
+import { WORDS, canonKey, matchesAnswer, singulars, wrapperStages } from './words.js';
 import { NEW_WORDS } from './words-new.js';
 
 const flat = (k) => k.replace(/ /g, '');
@@ -30,7 +30,7 @@ test('shipped decks load clean: valid answers, one owner per answer, Everyday = 
     for (const k of keysOf(w)) byKey.set(k, [...(byKey.get(k) || []), [d.id, w]]);
   }
   for (const d of DECKS) for (const u of TIERS.flatMap((t) => d[t])) {
-    for (const k of new Set([...keysOf(u), ...keysOf(stripWrapper(u))])) {
+    for (const k of new Set([...keysOf(u), ...wrapperStages(u).flatMap(keysOf)])) {
       for (const [id, w] of byKey.get(k) || []) {
         if (id !== d.id && matchesAnswer(u, w)) throw new Error(`${d.id} "${u}" matches ${id} "${w}"`);
       }
@@ -64,6 +64,23 @@ test('deck aliases fold into matching and cannot hijack existing answers', () =>
   expect(warnings.some((m) => /zorblings.*zz1/.test(m))).toBe(true);
   expect(warnings.some((m) => /not one of its answers/.test(m))).toBe(true);
   expect(warnings.filter((m) => /invalid/.test(m))).toHaveLength(3);
+});
+
+test('everyday dedupes by exact key but reserves its plural forms for later decks and aliases', () => {
+  const warnings = [];
+  const [every, a, b] = buildDecks([
+    { id: 'everyday', name: 'E', icon: 'e', easy: ['blorpwolves', 'blorpwolf', 'blorpwolves'] },
+    { id: 'zz3', name: 'Three', icon: '3', easy: ['blorpwolfe', 'snizzle'] },
+    { id: 'zz4', name: 'Four', icon: '4', easy: ['gronk'], aliases: { blorpwolfe: 'gronk' } },
+  ], (m) => warnings.push(m));
+  expect(every.easy).toEqual(['blorpwolves', 'blorpwolf']);
+  expect(a.easy).toEqual(['snizzle']);
+  expect(b.easy).toEqual(['gronk']);
+  expect(warnings).toEqual([
+    'zz3: "blorpwolfe" already belongs to everyday',
+    'zz4: alias "blorpwolfe" would hijack an existing answer',
+  ]);
+  expect(canonKey('blorpwolfe')).toBe('blorpwolfe');
 });
 
 test('deck ids are sanitised to known ids with a default', () => {

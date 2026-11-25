@@ -1717,7 +1717,19 @@ export function allDefaultWords() {
 // Deck aliases (`decks.js` registers them at load). Kept apart from ALIASES so
 // the curated legacy table stays exactly what words.test.js audits.
 const EXTRA_ALIASES = new Map();
-export function registerAlias(variant, answer) { EXTRA_ALIASES.set(norm(variant), norm(answer)); }
+export function registerAlias(variant, answer) { EXTRA_ALIASES.set(norm(variant), norm(answer)); aliasWords = null; }
+// Flat answer key -> most words in any of its aliases; rebuilt after a deck registers one.
+let aliasWords = null;
+const wordCount = (k) => k.split(' ').length;
+function aliasWordsFor(key) {
+  if (!aliasWords) {
+    aliasWords = new Map();
+    const note = (v, a) => { const k = flat(norm(a)); aliasWords.set(k, Math.max(aliasWords.get(k) || 0, wordCount(v))); };
+    for (const [v, a] of Object.entries(ALIASES)) note(v, a);
+    for (const [v, a] of EXTRA_ALIASES) note(v, a);
+  }
+  return aliasWords.get(flat(key)) || 0;
+}
 
 export function canonKey(s) {
   const n = norm(s);
@@ -1733,24 +1745,47 @@ export function singulars(s) {
   const i = n.lastIndexOf(' ') + 1;
   const head = n.slice(0, i), last = n.slice(i);
   if (last.length < 4 || !last.endsWith('s') || /(ss|us|is)$/.test(last)) return [];
-  const out = new Set([last.slice(0, -1)]);
+  // "-sses" only drops "es" ("glasses" -> "glass", never "glasse").
+  const out = new Set(last.endsWith('sses') ? [] : [last.slice(0, -1)]);
   if (last.endsWith('ies')) out.add(`${last.slice(0, -3)}y`);
   if (last.endsWith('ves')) { out.add(`${last.slice(0, -3)}f`); out.add(`${last.slice(0, -3)}fe`); }
   if (/(s|x|z|ch|sh|o)es$/.test(last)) out.add(last.slice(0, -2));
   return [...out].filter((w) => w.length >= 3).map((w) => head + w);
 }
 
-const flat = (k) => k.replace(/ /g, '');
-const sameKey = (a, b) => !!a && !!b && (a === b || flat(a) === flat(b));
-
-// One guess against one answer: equal, alias, or a regular plural either way
-// ("flash drives" -> "flash drive", "glass" <-> "glasses"). No edit distance.
-function sameAnswer(guess, word) {
-  const g = canonKey(guess), w = canonKey(word);
-  if (!g || !w) return false;
-  if (sameKey(g, w)) return true;
-  return singulars(guess).some((s) => sameKey(canonKey(s), w)) || singulars(word).some((s) => sameKey(g, canonKey(s)));
+// Regular plurals of an answer's last word (2+ letters), so answers too short
+// for `singulars` still accept them ("cd" -> "cds"). Built from the answer
+// only: a short guess is never pluralised into a different answer.
+function plurals(s) {
+  const n = norm(s);
+  const i = n.lastIndexOf(' ') + 1;
+  const head = n.slice(0, i), last = n.slice(i);
+  if (last.length < 2) return [];
+  const out = [/(s|x|z|ch|sh|o)$/.test(last) ? `${last}es` : `${last}s`];
+  if (last.endsWith('o')) out.push(`${last}s`);
+  if (last.endsWith('y')) out.push(`${last.slice(0, -1)}ies`);
+  if (last.endsWith('f')) out.push(`${last.slice(0, -1)}ves`);
+  if (last.endsWith('fe')) out.push(`${last.slice(0, -2)}ves`);
+  return out.map((w) => head + w);
 }
+
+const flat = (k) => k.replace(/ /g, '');
+
+// Guess tester for one answer: equal, alias, or a regular plural either way
+// ("flash drives" -> "flash drive", "glass" <-> "glasses"). No edit distance.
+// The answer's own forms are computed once, so scanning many runs stays cheap.
+function answerTest(word) {
+  const w = canonKey(word);
+  if (!w) return () => false;
+  const fw = flat(w);
+  const forms = new Set([fw, ...[...singulars(word), ...plurals(word), ...plurals(w)].map((s) => flat(canonKey(s)))]);
+  forms.delete('');
+  return (guess) => {
+    const g = canonKey(guess);
+    return !!g && (forms.has(flat(g)) || singulars(guess).some((s) => flat(canonKey(s)) === fw));
+  };
+}
+const sameAnswer = (guess, word) => answerTest(word)(guess);
 
 // Sentence wrappers people type around an answer. One opener at most, then an
 // optional article; trailing fillers may stack ("cat lol bro").
@@ -1759,31 +1794,40 @@ const OPENERS = ['i think its', 'i think', 'is it', 'it is', 'its', 'maybe', 'pr
 const ARTICLES = new Set(['a', 'an', 'the']);
 const FILLERS = new Set(['pls', 'please', 'lol', 'bro', 'right', 'maybe']);
 
-export function stripWrapper(text) {
+// Each stage of unwrapping, least stripped first: opener, then article, then
+// fillers one at a time. The last stage is the fully stripped text.
+export function wrapperStages(text) {
   let toks = norm(text).split(' ').filter(Boolean);
+  const out = [];
   const op = OPENERS.find((o) => o.length < toks.length && o.every((t, k) => toks[k] === t));
-  if (op) toks = toks.slice(op.length);
-  if (toks.length > 1 && ARTICLES.has(toks[0])) toks = toks.slice(1);
-  while (toks.length > 1 && FILLERS.has(toks.at(-1))) toks = toks.slice(0, -1);
-  return toks.join(' ');
+  if (op) out.push((toks = toks.slice(op.length)).join(' '));
+  if (toks.length > 1 && ARTICLES.has(toks[0])) out.push((toks = toks.slice(1)).join(' '));
+  while (toks.length > 1 && FILLERS.has(toks.at(-1))) out.push((toks = toks.slice(0, -1)).join(' '));
+  return out.length ? out : [toks.join(' ')];
 }
 
-// The whole input first, then with its wrapper stripped ("is it a cat?").
+export const stripWrapper = (text) => wrapperStages(text).at(-1);
+
+// The whole input first, then each unwrapping stage, so an article or filler
+// that belongs to the answer ("is it the floss", "is it swipe right") stays.
 export function matchesAnswer(guess, word) {
-  if (sameAnswer(guess, word)) return true;
-  const inner = stripWrapper(guess);
-  return inner !== norm(guess) && sameAnswer(inner, word);
+  const same = answerTest(word);
+  return same(guess) || wrapperStages(guess).some((inner) => inner !== norm(guess) && same(inner));
 }
 
 // True when a run of whole words in `text` is the answer, an alias of it, or
 // a plural ("lol bunnies" mentions "rabbit"). Whole words only, so "giant"
-// does not mention "ant".
+// does not mention "ant". Runs are as long as the answer or its longest alias,
+// plus one word for split spellings ("cup cake").
 export function mentionsAnswer(text, word) {
-  if (!canonKey(word)) return false;
+  const w = canonKey(word);
+  if (!w) return false;
+  const span = Math.max(wordCount(norm(word)), wordCount(w), aliasWordsFor(w)) + 1;
   const toks = norm(text).split(' ').filter(Boolean);
+  const same = answerTest(word);
   for (let i = 0; i < toks.length; i++) {
-    for (let j = i + 1; j <= Math.min(toks.length, i + 5); j++) {
-      if (sameAnswer(toks.slice(i, j).join(' '), word)) return true;
+    for (let j = i + 1; j <= Math.min(toks.length, i + span); j++) {
+      if (same(toks.slice(i, j).join(' '))) return true;
     }
   }
   return false;

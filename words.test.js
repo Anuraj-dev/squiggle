@@ -158,10 +158,11 @@ test('one sentence wrapper around a single answer scores; lists and junk do not'
     ['is it a cat?', 'cat'], ['its the cat', 'cat'], ["it's a cat lol", 'cat'], ['i think its an apple', 'apple'],
     ['maybe cat', 'cat'], ['probably the fire truck pls', 'fire truck'], ['must be a rabbit bro', 'rabbit'],
     ['looks like bunnies', 'rabbit'], ['the cat', 'cat'], ['cat right', 'cat'], ['IS IT A FRIDGE', 'refrigerator'],
+    ['Is it the floss?', 'the floss'], ['Is it swipe right?', 'swipe right'], ['maybe swipe right lol', 'swipe right'],
   ]) expect(matchesAnswer(guess, word)).toBe(true);
   for (const [guess, word] of [
     ['cat dog car', 'cat'], ['cat or dog', 'cat'], ['is it not a cat', 'cat'], ['maybe maybe cat', 'cat'],
-    ['is it', 'its'], ['a', 'cat'], ['lol', 'cat'],
+    ['is it', 'its'], ['a', 'cat'], ['lol', 'cat'], ['is it swipe right', 'swipe left'],
   ]) expect(matchesAnswer(guess, word)).toBe(false);
   // A list still mentions the answer, so it is held back as a spoiler.
   expect(mentionsAnswer('cat dog car', 'cat')).toBe(true);
@@ -173,13 +174,28 @@ test('regular plurals match in both directions for any word, without fuzzy wins'
     ['flash drives', 'flash drive'], ['berries', 'berry'], ['wolves', 'wolf'], ['knives', 'knife'],
     ['glasses', 'glass'], ['glass', 'glasses'], ['buses', 'bus'], ['boxes', 'box'], ['shoes', 'shoe'],
     ['heroes', 'hero'], ['my friend sams', 'my friend sam'], ['memes', 'meme'], ['is it wolves', 'wolf'],
+    ['cds', 'cd'], ['CDs', 'cd'], ['tvs', 'tv'], ['oxes', 'ox'], ['big pcs', 'big pc'],
   ]) expect(matchesAnswer(guess, word)).toBe(true);
   for (const [guess, word] of [
     ['catz', 'cat'], ['ca', 'cat'], ['bu', 'bus'], ['octopu', 'octopus'], ['iri', 'iris'], ['glas', 'glass'],
-    ['berri', 'berry'], ['wolfs', 'wolves'], ['as', 'a'], ['is', 'i'], ['gas', 'ga'],
+    ['berri', 'berry'], ['wolfs', 'wolves'], ['glasse', 'glasses'], ['glasse', 'glass'], ['as', 'a'], ['is', 'i'], ['ga', 'gas'], ['cd', 'cds'],
+    ['vitamin cs', 'vitamin c'], ['pies', 'pi'],
   ]) expect(matchesAnswer(guess, word)).toBe(false);
   // Stubs are never stripped: short words and -ss/-us/-is endings.
   for (const w of ['as', 'is', 'gas', 'bus', 'iris', 'glass', 'cactus']) expect(singulars(w)).toEqual([]);
   expect(mentionsAnswer('so many flash drives here', 'flash drive')).toBe(true);
   expect(mentionsAnswer('wolves everywhere', 'wolf')).toBe(true);
+  expect(mentionsAnswer('CDs or DVDs', 'cd')).toBe(true);
+  expect(mentionsAnswer('is it the cd', 'cd')).toBe(true);
+  expect(mentionsAnswer('this is a gas', 'as')).toBe(false);
+});
+
+test('answer mentions find long answers and aliases inside longer lists', () => {
+  expect(mentionsAnswer('a dog with a red hat or cat', 'a dog with a red hat')).toBe(true);
+  expect(mentionsAnswer('maybe a dog with a red hat', 'a dog with a red hat')).toBe(true);
+  expect(mentionsAnswer('a dog with a blue hat or cat', 'a dog with a red hat')).toBe(false);
+  expect(mentionsAnswer('cup cake or pie', 'cupcake')).toBe(true);
+  expect(mentionsAnswer('lol x marks the spot or gold', 'treasure map')).toBe(true);
+  const long = 'my grandmas famous lemon pie recipe';
+  expect(mentionsAnswer(`lol ${long}s or toast`, long)).toBe(true);
 });
