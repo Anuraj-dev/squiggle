@@ -59,3 +59,16 @@ After the merge, the suite is 156 pass, 0 fail.
 - Hydrogen was fast and its report was accurate. Its bugs were all subtle rendering-consistency issues in the new chaos modes, not crashes, but per unit of work it had about as many Medium findings as the Opus tracks.
 - The Opus-high reveal track had the only High finding: a state-machine edge case across disconnects.
 - Cheap Haiku research needed a strong curation and dedupe pass. Expect about 15% of the words to be cut.
+
+## Re-review (Sol round 2, on the merged fixes)
+
+Sol found 8 more issues; most came from the fix round itself. The driver fixed them inline (bafaf2f, 6585d8c, fd475eb). The suite is now 158 pass.
+
+- **Medium:** a finale drawer who left before choosing used up the game's one finale (from the `finaleSpent` fix).
+- **Medium:** the generated plural `slacks` resolved through the alias table to `pants` (from the plurals fix).
+- **Medium:** the rewritten mention scan used a shorter window and missed split spellings such as `r ab bit or dog`.
+- **Medium:** live fills sampled the canvas differently from a repaint while a Decoy Doodle was on the board.
+- **Low:** vote buttons stayed enabled for newcomers; "is it the floss please" failed; a clip cancelled during its first frame kept setting up; a 40-letter custom answer overflowed the topbar at 390 px.
+- **Accepted, not fixed:** an artist who leaves and rejoins after the grace window during the final reveal counts as a new player. Opposite Colors via CSS `hue-rotate` renders darker than a true complement (red → about `#006d6d`).
+
+Takeaway: every fix round needs its own review. Here, 5 of the 8 new findings came from fixes.
