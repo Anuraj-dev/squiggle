@@ -1714,32 +1714,127 @@ export function allDefaultWords() {
   return [...WORDS.easy, ...WORDS.medium, ...WORDS.hard];
 }
 
-export function canonKey(s) {
-  const n = norm(s);
-  return ALIASES[n] ? norm(ALIASES[n]) : n;
+// Deck aliases (`decks.js` registers them at load). Kept apart from ALIASES so
+// the curated legacy table stays exactly what words.test.js audits.
+const EXTRA_ALIASES = new Map();
+export function registerAlias(variant, answer) { EXTRA_ALIASES.set(norm(variant), norm(answer)); aliasWords = null; }
+// Flat answer key -> most words in any of its aliases; rebuilt after a deck registers one.
+let aliasWords = null;
+const wordCount = (k) => k.split(' ').length;
+function aliasWordsFor(key) {
+  if (!aliasWords) {
+    aliasWords = new Map();
+    const note = (v, a) => { const k = flat(norm(a)); aliasWords.set(k, Math.max(aliasWords.get(k) || 0, wordCount(v))); };
+    for (const [v, a] of Object.entries(ALIASES)) note(v, a);
+    for (const [v, a] of EXTRA_ALIASES) note(v, a);
+  }
+  return aliasWords.get(flat(key)) || 0;
 }
 
-export function matchesAnswer(guess, word) {
-  const g = canonKey(guess);
+export function canonKey(s) {
+  const n = norm(s);
+  return ALIASES[n] ? norm(ALIASES[n]) : EXTRA_ALIASES.get(n) || n;
+}
+
+// Plausible singulars of a phrase's last word: s, es, ies->y, ves->f/fe.
+// Guards keep stubs out: the last word needs 4+ letters, the stem 3+, and
+// "-ss", "-us", "-is" endings are never stripped ("glass", "bus", "iris").
+// Some candidates are junk ("berrie"); they only matter if they equal an answer.
+export function singulars(s) {
+  const n = norm(s);
+  const i = n.lastIndexOf(' ') + 1;
+  const head = n.slice(0, i), last = n.slice(i);
+  if (last.length < 4 || !last.endsWith('s') || /(ss|us|is)$/.test(last)) return [];
+  // "-sses" only drops "es" ("glasses" -> "glass", never "glasse").
+  const out = new Set(last.endsWith('sses') ? [] : [last.slice(0, -1)]);
+  if (last.endsWith('ies')) out.add(`${last.slice(0, -3)}y`);
+  if (last.endsWith('ves')) { out.add(`${last.slice(0, -3)}f`); out.add(`${last.slice(0, -3)}fe`); }
+  if (/(s|x|z|ch|sh|o)es$/.test(last)) out.add(last.slice(0, -2));
+  return [...out].filter((w) => w.length >= 3).map((w) => head + w);
+}
+
+// Regular plurals of an answer's last word (2+ letters), so answers too short
+// for `singulars` still accept them ("cd" -> "cds"). Built from the answer
+// only: a short guess is never pluralised into a different answer.
+function plurals(s) {
+  const n = norm(s);
+  const i = n.lastIndexOf(' ') + 1;
+  const head = n.slice(0, i), last = n.slice(i);
+  if (last.length < 2) return [];
+  const out = [/(s|x|z|ch|sh|o)$/.test(last) ? `${last}es` : `${last}s`];
+  if (last.endsWith('o')) out.push(`${last}s`);
+  if (last.endsWith('y')) out.push(`${last.slice(0, -1)}ies`);
+  if (last.endsWith('f')) out.push(`${last.slice(0, -1)}ves`);
+  if (last.endsWith('fe')) out.push(`${last.slice(0, -2)}ves`);
+  return out.map((w) => head + w);
+}
+
+const flat = (k) => k.replace(/ /g, '');
+
+// Guess tester for one answer: equal, alias, or a regular plural either way
+// ("flash drives" -> "flash drive", "glass" <-> "glasses"). No edit distance.
+// The answer's own forms are computed once, so scanning many runs stays cheap.
+function answerTest(word) {
   const w = canonKey(word);
-  if (!g || !w) return false;
-  if (g === w) return true;
-  if (g.replace(/ /g, '') === w.replace(/ /g, '')) return true;
-  return false;
+  if (!w) return () => false;
+  const fw = flat(w);
+  // Generated plurals are matched as spelled, never through the alias table:
+  // "slack" -> "slacks" must not become the alias target "pants".
+  const forms = new Set([fw, ...singulars(word).map((s) => flat(canonKey(s))), ...[...plurals(word), ...plurals(w)].map((s) => flat(norm(s)))]);
+  forms.delete('');
+  return (guess) => {
+    const g = canonKey(guess);
+    return !!g && (forms.has(flat(g)) || singulars(guess).some((s) => flat(canonKey(s)) === fw));
+  };
+}
+const sameAnswer = (guess, word) => answerTest(word)(guess);
+
+// Sentence wrappers people type around an answer. One opener at most, then an
+// optional article; trailing fillers may stack ("cat lol bro").
+const OPENERS = ['i think its', 'i think', 'is it', 'it is', 'its', 'maybe', 'probably', 'must be', 'looks like']
+  .map((o) => o.split(' '));
+const ARTICLES = new Set(['a', 'an', 'the']);
+const FILLERS = new Set(['pls', 'please', 'lol', 'bro', 'right', 'maybe']);
+
+// Each stage of unwrapping, least stripped first: opener, then article, then
+// fillers one at a time. The last stage is the fully stripped text.
+export function wrapperStages(text) {
+  let toks = norm(text).split(' ').filter(Boolean);
+  const out = [];
+  const op = OPENERS.find((o) => o.length < toks.length && o.every((t, k) => toks[k] === t));
+  if (op) out.push((toks = toks.slice(op.length)).join(' '));
+  // Fillers off but the article kept, for answers that start with one ("the floss please").
+  let keep = toks;
+  while (keep.length > 1 && FILLERS.has(keep.at(-1))) keep = keep.slice(0, -1);
+  if (keep !== toks && ARTICLES.has(toks[0])) out.push(keep.join(' '));
+  if (toks.length > 1 && ARTICLES.has(toks[0])) out.push((toks = toks.slice(1)).join(' '));
+  while (toks.length > 1 && FILLERS.has(toks.at(-1))) out.push((toks = toks.slice(0, -1)).join(' '));
+  return out.length ? out : [toks.join(' ')];
+}
+
+export const stripWrapper = (text) => wrapperStages(text).at(-1);
+
+// The whole input first, then each unwrapping stage, so an article or filler
+// that belongs to the answer ("is it the floss", "is it swipe right") stays.
+export function matchesAnswer(guess, word) {
+  const same = answerTest(word);
+  return same(guess) || wrapperStages(guess).some((inner) => inner !== norm(guess) && same(inner));
 }
 
 // True when a run of whole words in `text` is the answer, an alias of it, or
 // a plural ("lol bunnies" mentions "rabbit"). Whole words only, so "giant"
-// does not mention "ant".
+// does not mention "ant". Runs are as long as the answer or its longest alias,
+// plus one word for split spellings ("cup cake").
 export function mentionsAnswer(text, word) {
-  const w = canonKey(word).replace(/ /g, '');
+  const w = canonKey(word);
   if (!w) return false;
+  // At least 5 words, so a split spelling ("r ab bit") is still caught.
+  const span = Math.max(5, wordCount(norm(word)) + 1, wordCount(w) + 1, aliasWordsFor(w) + 1);
   const toks = norm(text).split(' ').filter(Boolean);
+  const same = answerTest(word);
   for (let i = 0; i < toks.length; i++) {
-    for (let j = i + 1; j <= Math.min(toks.length, i + 5); j++) {
-      const run = toks.slice(i, j).join(' ');
-      const c = canonKey(run).replace(/ /g, '');
-      if (c === w || c === `${w}s` || c === `${w}es`) return true;
+    for (let j = i + 1; j <= Math.min(toks.length, i + span); j++) {
+      if (same(toks.slice(i, j).join(' '))) return true;
     }
   }
   return false;

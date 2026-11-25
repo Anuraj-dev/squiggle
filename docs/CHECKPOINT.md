@@ -1,4 +1,4 @@
-# Checkpoint — 2026-10-14
+# Checkpoint — 2026-11-25
 
 ## State
 
@@ -20,8 +20,19 @@
 
 11. **Fun pass.** The chaos banner sits above the board with role pills ("· you" marks your side) and the turn multiplier. A splash card announces each chaos turn. The reveal recap moved into the top banner, and an everybody-got-it turn launches confetti and shows the artist bonus. Word choices show their multiplier.
 
+12. **Fun pass 2 (2026-11-25, `feat/game-fun-pass`).** Plan in `docs/fun-pass/PLAN.md`; build, review and fix rounds in `docs/fun-pass/BENCHMARK.md`.
+    - Guess matching accepts sentences and plurals. Lists that contain the answer stay private.
+    - Word history persists on disk (`data/`, gitignored).
+    - Eight category decks.
+    - Chaos changes: Gravity Ink, Decoy Doodle, Macro Cam, Opposite Colors, new stamps, Laggy Stream.
+    - Reveal recap ("The room thought"), a one-per-game FINALE at 2×, wins tonight, MVP votes.
+    - End-screen replay lightbox with speeds, a scrubber and prev/next, plus clip and game-reel video download.
+    - UI: a one-screen lobby, the board sized so the toolbar never crops, no deck pill while drawing, still badges, gallery cards that don't clip, a drawn scrubber that fills at the end, and a clip recording that stops when the lightbox closes.
+    - Verified: `bun test` 158/0 and Chrome through OBU.
+
 ## Open / unverified
 
+- **Video export:** Chrome may block repeat script downloads after the first; the app fires the download and toast regardless. Firefox and the 390px replay lightbox were not checked.
 - **Music sound:** the audio has never been listened to. Only the controls and state were checked.
 - **Chaos modes on screen:** legacy modes remain mostly unit-tested. The new thirteen challenges and clear/skip confirmations were exercised in Chrome. Exact batch/refill/speedup boundaries are covered by manual-clock tests.
 - **Design detector:** parser dependencies unavailable; regex fallback found only the existing podium bounce. Computed contrast was not audited by the detector.

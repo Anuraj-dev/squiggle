@@ -1,5 +1,5 @@
 import { join, normalize } from 'node:path';
-import { onMessage, onClose } from './game.js';
+import { onMessage, onClose, flushWordHistory } from './game.js';
 
 const PORT = Number(process.env.PORT) || 3789;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -31,3 +31,6 @@ const server = Bun.serve({
 });
 
 console.log(`squiggle running at http://${server.hostname}:${server.port}`);
+
+// Save word history before exiting so a pending debounced write is not lost.
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { flushWordHistory(); process.exit(0); });

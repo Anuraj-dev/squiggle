@@ -4,3 +4,4 @@ node_modules/
 !.env.example
 bun.lockb
 .DS_Store
+data/

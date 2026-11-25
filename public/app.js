@@ -1,9 +1,10 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, MEMORY_STROKES,
   INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
-  scoreMult, DIFF_MULT } from './shared.js';
-import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
+  recentInkCenter, macroView, scoreMult, DIFF_MULT } from './shared.js';
+import { applyStroke, drawLiveStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { renderShareCard } from './share.js';
+import { ReplayPlayer, SPEEDS, recordingSupported, recordSegments, drawingSegments, reelSegments, deliverClip, clipName } from './replay.js';
 import { createMusic } from './music.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -40,6 +41,11 @@ const ICONS = {
   square: '<rect x="4" y="4" width="16" height="16"/>',
   arrow: '<path d="M3 9H14V4L22 12L14 20V15H3Z"/>',
   star: '<path d="M12 2L15 8L22 9L17 14L18 21L12 18L6 21L7 14L2 9L9 8Z"/>',
+  heart: '<path d="M12 20s-7-4.6-9-9a5 5 0 019-3 5 5 0 019 3c-2 4.4-9 9-9 9z"/>',
+  moon: '<path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/>',
+  cloud: '<path d="M6.5 18h11a4 4 0 00.7-7.9A5.5 5.5 0 007.5 8.5 4.5 4.5 0 006.5 18z"/>',
+  bolt: '<path d="M13 2L5 13h6l-1 9 9-12h-6z"/>',
+  eye: '<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>',
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>',
   eraser: '<path d="M8 20h12"/><path d="M4 15l9-9 6 6-7 7H8z"/><path d="M9 10l6 6"/>',
   fill: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c0 2 1 3 1 4a1.5 1.5 0 01-3 0c0-1 1-2 2-4z"/>',
@@ -405,11 +411,12 @@ const strength = () => {
 };
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || guesserView('laggy') || guesserView('pixel') || guesserView('puzzle');
+const timed = () => fading() || liveChaos('gravity') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
-  chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
+  chaos: S?.chaos,
+  gameMs: S?.state === 'reveal' ? (S.reveal?.endMs ?? 0) : gameMs(),
+  fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  lagMs: guesserView('laggy') ? LAG_MS * strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
@@ -455,8 +462,10 @@ function present() {
 }
 // Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
-  else drawStroke(ctx, s, from, renderOpts());
+  // A fill next to a decoy samples the board without decoys in a full repaint,
+  // so it repaints too instead of sampling the redrawn decoy.
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel') || (s.tool === 'fill' && strokes.some((x) => x.decoy))) markDirty();
+  else drawLiveStroke(ctx, strokes, s, from, renderOpts());
 }
 
 let tool = 'pen', stampShape = 'circle', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null, rawLast = null;
@@ -568,6 +577,7 @@ function endPointer(e) {
     shape = null;
     const [x1, y1, x2, y2] = s.pts;
     if (s.tool === 'stamp' || Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
+      s.t = gameMs();
       act('stroke', { s });
       s.pts = s.tool === 'stamp' ? stampBounds(s.pts, s.shape) : shown(s, s.pts);
       strokes.push(s); drawLive(s, 0);
@@ -643,6 +653,7 @@ function render(prev) {
   if (changed && S.state === 'end') confetti(120);
   if (changed && S.state === 'reveal' && S.reveal?.reason === 'all') { confetti(180); celebrate(); }
   chaosSplash();
+  finaleSplash();
   if (prev?.state === 'end' && S.state !== 'end') gallery = [];
 
   const sorted = S.state === 'lobby' ? S.players : [...S.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -669,7 +680,7 @@ function render(prev) {
         kickBtn));
   }));
 
-  $('#roundLbl').textContent = inGame() ? `Round ${S.round} of ${S.settings.rounds}` : '';
+  $('#roundLbl').textContent = inGame() ? `Round ${S.round} of ${S.settings.rounds}${S.finale ? ' · 🔥 Finale' : ''}` : '';
   renderWord(isDrawer, drawer);
   $('#timer').hidden = !inGame();
   $('#timer').classList.toggle('paused', !!S.paused);
@@ -735,6 +746,7 @@ function renderOverlay(isDrawer, drawer) {
   const show = !(S.state === 'drawing' || S.state === 'reveal' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
   ov.hidden = !show;
   $('#boardWrap').classList.toggle('expand', show);
+  $('#boardWrap').classList.toggle('settings', show && S.state === 'lobby');
   pill.hidden = !(S.state === 'lobby' && lobbyMinimized);
   if (!show) { overlayKey = key; return; }
   if (key !== overlayKey) {
@@ -783,7 +795,7 @@ function renderChallenge() {
     return;
   }
   const [artist, guesser] = [S.chaos, S.guesserChaos];
-  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}`;
+  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}:${S.finale}`;
   if (strip.dataset.mode !== key) {
     strip.dataset.mode = key;
     strip.className = `challenge${artist || guesser ? ' chaotic' : ''}`;
@@ -793,6 +805,7 @@ function renderChallenge() {
       h('div', { class: 'stakes' },
         h('div', { class: 'budget', hidden: true },
           h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })),
+        S.finale ? h('span', { class: 'finale-chip', title: 'Last turn of the game: every point counts double', text: '🔥 FINALE · 2×' }) : null,
         S.diff ? h('span', { class: `stake ${S.diff}`, title: 'Points multiplier this turn', text: `${S.diff} ${multText(scoreMult(S.diff, turnModes()))}` }) : null));
   }
   const label = $('#budgetText');
@@ -838,6 +851,18 @@ function chaosSplash() {
   play('chaos');
 }
 
+// The last turn of the game scores double. A ribbon across the top of the board
+// (not a centred card) so it never covers the chaos splash or the drawing.
+let finaleSeq = -1;
+function finaleSplash() {
+  if (!S.finale || !inGame() || S.state === 'reveal' || finaleSeq === S.seq) return;
+  finaleSeq = S.seq;
+  $('#boardWrap .finale-ribbon')?.remove();
+  const el = h('div', { class: 'finale-ribbon', role: 'status' }, h('b', { text: '🔥 FINALE · 2× points' }), h('small', { text: 'Last turn of the game!' }));
+  $('#boardWrap').append(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
 function celebrate() {
   const wrap = $('#boardWrap');
   wrap.classList.remove('party'); void wrap.offsetWidth; wrap.classList.add('party');
@@ -849,7 +874,9 @@ function buildChoosing(isDrawer, drawer) {
       h('h2', { text: 'Pick a word' }),
       chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'),
       h('div', { class: 'choices' }, S.choices.map((c, i) => h('button', { class: 'choice', onclick: () => act('choose', { i }) },
-        h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` }),
+        h('span', { class: 'badges' },
+          c.deck ? h('span', { class: 'deck-badge', text: `${c.deck.icon} ${c.deck.name}` }) : null,
+          h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` })),
         h('span', { class: 'w', text: c.word })))),
       h('div', { class: 'choice-actions' },
         S.rerolled ? null : h('button', { class: 'btn ghost', text: 'New words', onclick: () => act('reroll') }),
@@ -873,7 +900,10 @@ function buildReveal() {
     h('div', { class: 'reveal-head' },
       h('span', { class: 'reveal-reason', text: reason }),
       h('span', { class: 'reveal-word', text: r.word || '' }),
-      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null),
+      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null,
+      r.finale ? h('span', { class: 'finale-chip', title: 'Finale: every point counted double', text: '🔥 2×' }) : null),
+    r.recap?.length ? h('div', { class: 'room-thought' }, h('small', { text: 'The room thought:' }),
+      r.recap.map((x) => h('span', { class: 'wrong', title: `${playerById(x.by)?.name || 'Someone'}${x.n > 1 ? ` and ${x.n - 1} more` : ''}`, text: `“${x.text}”` }))) : null,
     h('div', { class: 'reveal-scores' },
       scored.length ? scored.map((d) => {
         const p = playerById(d.id) || { name: d.name };
@@ -889,7 +919,6 @@ const TIMES = [30, 40, 60, 80, 100, 120, 150, 180, 240];
 const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
-const WORD_SETS = { legacy: 'Legacy', new: 'New' };
 const CHAOS_OPTS = { off: 'Off', x1: '1x · ~1 in 4 turns', x2: '2x · ~1 in 2 turns', x3: '3x · ~3 in 4 turns', x4: '4x · every turn' };
 const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
 const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
@@ -899,7 +928,7 @@ function readSettings() {
   const preset = q('preset').value;
   const out = {
     rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
-    difficulty: q('difficulty').value, wordSet: $('#overlay').querySelector('[name=wordSet]:checked')?.value,
+    difficulty: q('difficulty').value, decks: [...$('#overlay').querySelectorAll('.deck-chips input:checked')].map((el) => el.value),
     chaos: preset === 'classic' ? 'off' : q('chaos').value,
     chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
@@ -924,16 +953,17 @@ function buildLobby() {
     h('div', { class: 'lobby-head' },
       h('button', { class: 'btn primary', text: `🔗 Invite friends · ${S.code}`, onclick: copyInvite }),
       h('button', { class: 'btn ghost', text: '✏️ Doodle', title: 'Hide settings and doodle while you wait', onclick: () => { lobbyMinimized = true; render(S); } })),
+    h('p', { class: 'wins-line', name: 'wins', hidden: true }),
     h('div', { class: 'grid' },
       h('label', { class: 'field mode-field' }, h('span', { text: 'Mode' }), h('select', { name: 'preset', onchange: (e) => {
         if (e.target.value !== 'classic' && $('[name=chaos]').value === 'off') $('[name=chaos]').value = 'x4';
         pushSettings();
       } }, Object.entries(PRESETS).map(([value, text]) => h('option', { value, text })))),
       h('fieldset', { class: 'word-set' },
-        h('legend', { text: 'Word set' }),
-        h('div', { class: 'seg' }, Object.entries(WORD_SETS).map(([value, text]) => h('label', {},
-          h('input', { type: 'radio', name: 'wordSet', value, onchange: pushSettings }),
-          h('span', { text }))))),
+        h('legend', { text: 'Word decks' }),
+        h('div', { class: 'deck-chips' }, (S.deckCatalog || []).map((d) => h('label', { class: 'deck-chip', title: `${d.count} words` },
+          h('input', { type: 'checkbox', value: d.id, onchange: pushSettings }),
+          h('span', { text: `${d.icon} ${d.name}` }))))),
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
       h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
@@ -971,9 +1001,11 @@ function syncLobby() {
     if (sel !== active) sel.value = String(value);
     sel.disabled = !host;
   }
-  for (const el of $('#overlay').querySelectorAll('[name=wordSet]')) {
-    if (el !== active) el.checked = el.value === (s.wordSet || 'legacy');
-    el.disabled = !host;
+  // At least one deck stays on unless the game only uses the host's words.
+  const decks = new Set(s.decks || []);
+  for (const el of $('#overlay').querySelectorAll('.deck-chips input')) {
+    if (el !== active) el.checked = decks.has(el.value);
+    el.disabled = !host || (!s.customOnly && decks.size === 1 && decks.has(el.value));
   }
   $('#chaosFrequency').hidden = s.chaos === 'off';
   const picked = new Set(s.chaosIds || CHAOS_MODES.map((c) => c.id));
@@ -989,6 +1021,9 @@ function syncLobby() {
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;
   const ta = q('customWords');
   if (ta && ta !== active && Array.isArray(s.customWords)) ta.value = s.customWords.join(', ');
+  const wins = q('wins');
+  wins.hidden = !S.wins?.length;
+  wins.textContent = `🏆 Wins tonight: ${(S.wins || []).map((w) => `${w.name} ${w.n}`).join(' · ')}`;
   const n = S.players.filter((p) => p.connected).length;
   const start = q('start');
   if (start) {
@@ -1095,7 +1130,7 @@ $('#chatForm').onsubmit = (e) => {
 
 function fullPng(g) {
   const cv = h('canvas', { width: W, height: H });
-  paintPaper(cv.getContext('2d', { willReadFrequently: true }), g.strokes || []);
+  paintPaper(cv.getContext('2d', { willReadFrequently: true }), g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
   return cv;
 }
 
@@ -1106,24 +1141,149 @@ function queueThumbs(items) {
   const next = () => {
     if (job !== thumbJob || !items.length) return;
     const [cv, g] = items.shift();
-    paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || []);
+    paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
     setTimeout(next, 0);
   };
   next();
 }
 
+// Running clip/reel recordings, cancelled when the end screen goes away.
+const recordings = new Set();
+
+// A button that records a video and hands it over, showing progress and a
+// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Aborting
+// `until` (e.g. its dialog closing) cancels a running recording. Returns null
+// (no button at all) where the browser cannot record.
+function recorder(label, title, job, until) {
+  if (!recordingSupported()) return null;
+  const wrap = h('div', { class: 'rec' });
+  const idle = () => fill(wrap, h('button', { class: 'btn', type: 'button', text: label, title, onclick: start }));
+  async function start() {
+    if (until?.aborted) return;
+    const ctl = new AbortController();
+    const stop = () => ctl.abort();
+    until?.addEventListener('abort', stop, { once: true });
+    recordings.add(ctl);
+    const bar = h('progress', { max: 1, value: 0, 'aria-label': 'Recording progress' });
+    const pct = h('span', { class: 'rec-pct', text: '0%' });
+    const cancel = h('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => ctl.abort() });
+    fill(wrap, h('span', { class: 'rec-label', text: '🎬 Recording' }), bar, pct, cancel);
+    cancel.focus();
+    // Chrome fires a dialog's `close` event on its next rendered frame, which a
+    // background window may not paint for seconds while the recorder's timers keep
+    // running. So check the dialog itself rather than wait for `until`.
+    const gone = () => !wrap.isConnected || wrap.closest('dialog')?.open === false;
+    try {
+      const { segments, name } = job();
+      const clip = await recordSegments(segments, {
+        signal: ctl.signal,
+        onProgress: (f) => {
+          if (gone()) return ctl.abort();
+          bar.value = f; pct.textContent = `${Math.round(f * 100)}%`;
+        },
+      });
+      if (gone()) ctl.abort();
+      ctl.signal.throwIfAborted();
+      const filename = name(clip.ext);
+      const out = deliverClip(clip, filename);
+      if (!out.shared) { toast(`Saved ${filename} 🎬`); idle(); wrap.firstChild?.focus(); return; }
+      // Sharing needs a fresh tap: offer it next to a plain save.
+      const share = h('button', { class: 'btn go', type: 'button', text: '📤 Share', onclick: () => out.share().catch((err) => { if (err?.name !== 'AbortError') out.save(); }) });
+      fill(wrap, share, h('button', { class: 'btn', type: 'button', text: '⬇ Save', onclick: out.save }));
+      share.focus();
+    } catch (err) {
+      if (err?.name !== 'AbortError') { console.error(err); toast('Could not record the video. Try again'); }
+      if (wrap.isConnected) { idle(); wrap.firstChild?.focus(); }
+    } finally {
+      recordings.delete(ctl);
+      until?.removeEventListener('abort', stop);
+    }
+  }
+  idle();
+  return wrap;
+}
+
+const fmtSec = (ms) => `${(ms / 1000).toFixed(1)}s`;
+
+// Tapping a gallery drawing replays it stroke by stroke, with the same board.js
+// rendering as the gallery, so chaos effects look identical.
 function openLightbox(g, opener) {
-  const box = h('dialog', { class: 'lightbox', 'aria-label': `Drawing of ${g.word}` },
-    fullPng(g),
-    h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' })));
+  const cv = h('canvas', { class: 'replay-cv', width: W, height: H });
+  const playBtn = h('button', { class: 'btn rp-play', type: 'button' });
+  const scrub = h('input', { class: 'rp-scrub', type: 'range', min: 0, step: 1, value: 0, 'aria-label': 'Replay position' });
+  const time = h('span', { class: 'rp-time' });
+  const speedBtns = SPEEDS.map((x) => h('button', { type: 'button', text: `${x}×`, 'aria-pressed': String(x === 1), onclick: () => {
+    player.speed = x;
+    for (const b of speedBtns) b.setAttribute('aria-pressed', String(b === speedBtns[SPEEDS.indexOf(x)]));
+  } }));
+  const player = new ReplayPlayer(cv, g.strokes || [], (ms, playing, total) => {
+    scrub.value = String(Math.round(ms));
+    scrub.style.setProperty('--p', total ? String(Math.min(1, ms / total)) : '0');
+    time.textContent = `${fmtSec(ms)} / ${fmtSec(total)}`;
+    playBtn.textContent = playing ? '⏸️ Pause' : ms >= total ? '🔁 Replay' : '▶️ Play';
+    playBtn.setAttribute('aria-label', playing ? 'Pause replay' : ms >= total ? 'Replay from the start' : 'Play replay');
+  }, g.endMs);
+  scrub.max = String(Math.round(player.total));
+  scrub.disabled = !player.total;
+  const toggle = () => (player.playing ? player.pause() : player.play());
+  playBtn.onclick = toggle;
+  // Tapping the drawing itself plays or pauses, like a video.
+  cv.onclick = toggle;
+  // Step through the gallery without going back to the grid. Closing returns
+  // focus to the thumbnail of the drawing that was showing last.
+  const at = gallery.indexOf(g);
+  const step = (d) => {
+    const next = gallery[at + d];
+    if (!next) return;
+    box.close();
+    openLightbox(next, document.querySelector(`.gal[data-id="${next.id}"] .thumb-btn`) || opener);
+  };
+  const nav = (d, text, label) => h('button', { class: 'rp-nav', type: 'button', text, 'aria-label': label, disabled: !gallery[at + d], onclick: () => step(d) });
+  // Read the position first: pausing repaints and moves the scrubber back.
+  scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
+  // Closing the lightbox by any path (button, Escape, backdrop) stops its clip.
+  const life = new AbortController();
+  const clip = recorder('⬇ Download clip', 'About 6 seconds of video', () => ({
+    segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
+  }), life.signal);
+  const box = h('dialog', { class: 'lightbox replay', 'aria-label': `Replay of ${g.word} by ${g.drawer?.name || 'someone'}` },
+    h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) }),
+      at >= 0 && gallery.length > 1 ? h('span', { class: 'rp-count', text: `${at + 1} / ${gallery.length}` }) : null),
+    h('div', { class: 'rp-stage' },
+      at >= 0 && gallery.length > 1 ? nav(-1, '‹', 'Previous drawing') : null,
+      cv,
+      at >= 0 && gallery.length > 1 ? nav(1, '›', 'Next drawing') : null),
+    h('div', { class: 'rp-controls' },
+      playBtn,
+      h('div', { class: 'rp-speed', role: 'group', 'aria-label': 'Replay speed' }, speedBtns),
+      scrub, time),
+    h('div', { class: 'rp-actions' }, clip,
+      h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' }))));
   box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
-  box.addEventListener('close', () => { box.remove(); opener?.focus(); });
+  // Space plays/pauses and ←/→ step drawings, except where the key already
+  // means something (the scrubber's arrows, a focused button's Space).
+  box.addEventListener('keydown', (e) => {
+    if (e.target === scrub || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); toggle(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+  });
+  box.addEventListener('close', () => {
+    life.abort();
+    player.destroy();
+    box.remove();
+    opener?.focus();
+  });
   document.body.append(box);
   box.showModal();
+  // Reduced motion: open on the finished drawing, paused; play stays a tap away.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) player.seek(player.total);
+  else player.play();
 }
 
 function closeDialogs() {
   thumbJob++;
+  for (const r of recordings) r.abort();
   for (const d of document.querySelectorAll('dialog.lightbox')) d.close();
   const modal = $('#endModal');
   if (modal.open) modal.close();
@@ -1157,8 +1317,11 @@ function renderEnd(fresh) {
   if (!fresh && modal.open && modal.dataset.n === String(gallery.length)) {
     modal.querySelector('[name=again]').hidden = !host;
     modal.querySelector('[name=waitHost]').hidden = host;
+    syncVotes(modal);
     return;
   }
+  // A rebuild drops the end screen's buttons, so stop recordings they started.
+  for (const r of recordings) r.abort();
   modal.dataset.n = String(gallery.length);
   const { ranking = [], awards = [] } = S.end || {};
   const { podium, rest } = podiumGroups(ranking);
@@ -1176,7 +1339,9 @@ function renderEnd(fresh) {
       h('div', { class: 'blk', text: String(g.rank) })))),
     rest.length ? h('ol', { class: 'rest' }, rest.map((p) => h('li', {}, h('b', { text: `#${p.rank}` }), avatarEl(p), p.name, h('span', { class: 'p', text: String(p.score) })))) : null,
     awards.length ? h('div', { class: 'awards' }, awards.map((w) => h('div', { class: 'award' }, h('span', { class: 'i', text: w.icon }), h('span', {}, h('b', { text: `${w.title}: ${w.who}` }), h('small', { text: w.detail }))))) : null,
+    gallery.length > 1 ? h('section', { class: 'mvp-feature', name: 'mvp', 'aria-live': 'polite' }) : null,
     gallery.length ? h('h3', { class: 'section-h', text: '🖼️ Tonight’s gallery' }) : null,
+    gallery.length > 1 ? h('p', { class: 'muted vote-hint', text: 'Tap a drawing to replay it. Vote 🏆 for your favourite (not your own).' }) : null,
     h('div', { class: 'gallery' }, gallery.map((g) => {
       const cv = h('canvas', { class: 'thumb', width: 280, height: 210 });
       thumbs.push([cv, g]);
@@ -1185,12 +1350,18 @@ function renderEnd(fresh) {
         h('a', { href: url, download: `squiggle-${g.word.replace(/[^a-z0-9]+/gi, '-')}.png` }).click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
-      const by = byline(g);
-      return h('figure', { class: 'gal' },
-        h('button', { class: 'thumb-btn', 'aria-label': `Open drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
+      const chaos = [g.chaos?.name, g.guesserChaos?.name].filter(Boolean).join(' · ');
+      const own = g.drawer?.id === myId;
+      return h('figure', { class: 'gal', 'data-id': String(g.id) },
+        h('button', { class: 'thumb-btn', 'aria-label': `Replay drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
-          h('span', {}, h('span', { class: 'w', text: g.word }), h('br'), h('span', { class: 'by', text: by })),
-          h('button', { class: 'dl', text: '⬇', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl })));
+          h('span', { class: 'w', text: g.word }),
+          h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}` }),
+          chaos ? h('span', { class: 'ch', text: `🌀 ${chaos}` }) : null,
+          h('span', { class: 'acts' },
+            gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, 'data-own': own ? '1' : null, title: own ? 'Your own drawing' : 'Vote for this drawing',
+              onclick: () => send('vote', { id: S.mvp?.mine === g.id ? null : g.id }) }) : null,
+            h('button', { class: 'dl', text: '⬇ PNG', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl }))));
     })),
     h('div', { class: 'end-actions' },
       h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby',
@@ -1199,13 +1370,58 @@ function renderEnd(fresh) {
           cancel: 'Stay a little longer',
         }) }),
       h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
-        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes })) }) }),
+        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs })),
+          mvp: mvpDrawings().map(({ g, votes }) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs, votes })) }) }),
+      gallery.length ? recorder('⭐ Download game reel', 'Every drawing back to back as one video', () => ({
+        segments: reelSegments(gallery), name: (ext) => clipName(`squiggle-${S?.code || roomCode || 'game'}`, 'everyone', ext),
+      })) : null,
       h('button', { class: 'btn big', text: '🔗 Invite more friends', onclick: copyInvite }),
       h('p', { class: 'muted', name: 'waitHost', hidden: host, text: 'The host can take everyone back to the lobby for another game.' }))));
+  syncVotes(modal);
   if (!modal.open) modal.showModal();
   queueThumbs(thumbs);
   (modal.querySelector('[name=again]:not([hidden])') || modal.querySelector('#endTitle')).focus();
 }
+const mvpDrawings = () => (S?.mvp?.winners || []).map((id) => gallery.find((g) => g.id === id)).filter(Boolean)
+  .map((g) => ({ g, votes: S.mvp.tally[g.id] || 0 }));
+
+// Live MVP votes, updated in place so thumbnails and focus survive each vote.
+function syncVotes(modal) {
+  const mvp = S.mvp || { tally: {}, winners: [], mine: null };
+  for (const fig of modal.querySelectorAll('.gal[data-id]')) {
+    const id = +fig.dataset.id, n = mvp.tally[id] || 0, mine = mvp.mine === id;
+    fig.classList.toggle('is-mvp', mvp.winners.includes(id));
+    const b = fig.querySelector('.vote');
+    if (!b) continue;
+    // Only players of the finished match vote; a newcomer just watches the tally.
+    const locked = !!b.dataset.own || mvp.canVote === false;
+    b.disabled = locked;
+    if (!b.dataset.own) b.title = locked ? 'Only players from this game can vote' : 'Vote for this drawing';
+    b.textContent = `${mine ? '✓' : '🏆'} ${n}`;
+    b.setAttribute('aria-pressed', String(mine));
+    b.setAttribute('aria-label', `${mine ? 'Remove your vote for' : 'Vote for'} this drawing, ${n} vote${n === 1 ? '' : 's'}`);
+  }
+  const box = modal.querySelector('[name=mvp]');
+  const winners = mvpDrawings();
+  const key = winners.map((w) => `${w.g.id}:${w.votes}`).join(',');
+  if (!box || box.dataset.key === key) return;
+  box.dataset.key = key;
+  if (!winners.length) {
+    fill(box, h('p', { class: 'mvp-empty', text: '🏆 Gallery MVP: no votes yet. Pick a favourite below!' }));
+    return;
+  }
+  const thumbs = [];
+  fill(box,
+    h('h3', { class: 'section-h', text: `🏆 Gallery MVP${winners.length > 1 ? 's · it’s a tie' : ''}` }),
+    h('div', { class: 'mvp-row' }, winners.map(({ g, votes }) => {
+      const cv = h('canvas', { class: 'thumb', width: 320, height: 240 });
+      thumbs.push([cv, g]);
+      return h('button', { class: 'mvp-card', type: 'button', 'aria-label': `Replay MVP drawing of ${g.word}`, onclick: (e) => openLightbox(g, e.currentTarget) },
+        cv, h('span', { class: 'w', text: g.word }), h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'} · ${votes} vote${votes === 1 ? '' : 's'}` }));
+    })));
+  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
+}
+
 // The end screen has no "dismiss" — Esc must not strand players behind it.
 $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 
@@ -1213,6 +1429,21 @@ $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 
 let lastSec = -1;
 let lastView = 0;
+let macroCam = { x: W / 2, y: H / 2, seq: -1, at: 0 };
+function updateMacro(now) {
+  if (!guesserView('macro')) return;
+  const amount = strength();
+  if (amount <= 0) { board.style.transform = ''; return; }
+  if (macroCam.seq !== S.seq) macroCam = { x: W / 2, y: H / 2, seq: S.seq, at: now };
+  const dt = S.paused ? 0 : Math.min(0.05, Math.max(0, (now - macroCam.at) / 1000));
+  macroCam.at = now;
+  const target = recentInkCenter(strokes);
+  const k = 1 - Math.exp(-dt * 4.5);
+  macroCam.x += (target.x - macroCam.x) * k;
+  macroCam.y += (target.y - macroCam.y) * k;
+  const { zoom, tx, ty } = macroView(macroCam, amount);
+  board.style.transform = `translate(${(tx * 100).toFixed(2)}%, ${(ty * 100).toFixed(2)}%) scale(${zoom.toFixed(4)})`;
+}
 function paintGuesserView(now) {
   if (now - lastView < 100) return;
   lastView = now;
@@ -1220,12 +1451,16 @@ function paintGuesserView(now) {
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const filters = [];
   if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
-  if (guesserView('negative')) filters.push(`invert(${amount}) hue-rotate(${180 * amount}deg)`);
+  // Opposite Colors: the board stays true-colour (so fills match the artist's)
+  // and only the guesser's canvas element is hue-rotated; paper and grays stay put.
+  if (guesserView('negative') && amount > 0) filters.push(`hue-rotate(${(180 * amount).toFixed(1)}deg)`);
   board.style.filter = filters.join(' ');
-  board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
-    ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
-    : guesserView('quake') && !reducedMotion && amount > 0
-      ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  if (!guesserView('macro')) {
+    board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
+      ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
+      : guesserView('quake') && !reducedMotion && amount > 0
+        ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  }
   if (guesserView('spotlight') || liveChaos('forbidden') || liveChaos('shrinking')) drawFx();
 }
 function tick() {
@@ -1233,6 +1468,7 @@ function tick() {
   if (!S) return;
   const now = performance.now();
   paintGuesserView(now);
+  updateMacro(now);
   if (inGame()) {
     const { left } = clientClock(S, stateRecvAt, now);
     const sec = Math.ceil(left / 1000);

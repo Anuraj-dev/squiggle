@@ -2,7 +2,7 @@
 // export. Every paint function draws in paper coordinates onto a full-size
 // (W×H) context whose transform is identity on entry, so live view, gallery
 // and download all rasterise the same way. No DOM access at import time.
-import { W, H, fadeAlpha, fadeMs } from './shared.js';
+import { W, H, fadeAlpha, fadeMs, gravityOffset, strokeMaxY } from './shared.js';
 
 let makeCanvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h });
 export function setCanvasFactory(fn) { makeCanvas = fn; }
@@ -94,16 +94,17 @@ export function drawStroke(c, s, from = 0, opts = {}) {
     alpha = fadeAlpha((opts.gameMs || 0) - (s.t || 0), fadeMs(opts.chaos?.seed || 1));
     if (alpha <= 0) return;
   }
+  const dy = s.gravity ? gravityOffset((opts.gameMs || 0) - (s.t || 0), strokeMaxY(s)) : 0;
   const color = s.tool === 'fill' && s.rainbow ? RAINBOW_FILLS[hashId(s.id) % RAINBOW_FILLS.length] : s.color;
   for (const [sx, sy, tx, ty, a] of views(s)) {
     c.save();
     c.globalAlpha = alpha * a;
     if (s.tool === 'fill') {
       const px = (v, max) => Math.min(max - 1, Math.max(0, Math.round(v)));
-      fillAt(c, px(sx * s.pts[0] + tx, W), px(sy * s.pts[1] + ty, H), color);
+      fillAt(c, px(sx * s.pts[0] + tx, W), px(sy * s.pts[1] + ty + dy, H), color);
     } else {
       // Compose onto the current transform rather than replacing it.
-      c.transform(sx, 0, 0, sy, tx, ty);
+      c.transform(sx, 0, 0, sy, tx, ty + dy);
       if (s.forbidden) {
         const { x, y, w, h } = s.forbidden;
         c.beginPath(); c.rect(0, 0, W, H); c.rect(x, y, w, h);
@@ -115,8 +116,8 @@ export function drawStroke(c, s, from = 0, opts = {}) {
   }
 }
 
-// opts.memory keeps only the newest strokes; opts.lagMs hides strokes younger
-// than that (by game time).
+// opts.memory keeps only the newest strokes. Decoy strokes render once in order
+// (so fills respect them) and again on top so erasers cannot wipe them.
 export function paintPaper(c, strokes, opts = {}) {
   c.save();
   c.setTransform(1, 0, 0, 1, 0, 0);
@@ -124,16 +125,24 @@ export function paintPaper(c, strokes, opts = {}) {
   c.fillStyle = '#fff';
   c.fillRect(0, 0, W, H);
   c.restore();
-  let list = opts.memory ? strokes.slice(-opts.memory) : strokes;
-  if (opts.lagMs) list = list.filter((s) => (opts.gameMs || 0) - (s.t || 0) >= opts.lagMs);
+  const list = opts.memory ? strokes.slice(-opts.memory) : strokes;
+  const decoys = list.filter((s) => s.decoy);
   for (const s of list) drawStroke(c, s, 0, opts);
+  for (const s of decoys) drawStroke(c, s, 0, opts);
+}
+
+// Incremental counterpart of paintPaper: paints one new stroke or segment, then
+// the decoys again on top, so live, resync and replay stack them the same way.
+export function drawLiveStroke(c, strokes, s, from = 0, opts = {}) {
+  drawStroke(c, s, from, opts);
+  if (!s.decoy) for (const d of strokes) if (d.decoy) drawStroke(c, d, 0, opts);
 }
 
 let thumbPaper = null;
 // Thumbnails rasterise at full resolution on one reusable canvas, then scale.
-export function paintThumb(tctx, w, h, strokes) {
+export function paintThumb(tctx, w, h, strokes, opts = {}) {
   thumbPaper ||= makeCanvas(W, H);
-  paintPaper(thumbPaper.getContext('2d', { willReadFrequently: true }), strokes);
+  paintPaper(thumbPaper.getContext('2d', { willReadFrequently: true }), strokes, opts);
   tctx.drawImage(thumbPaper, 0, 0, w, h);
 }
 
@@ -145,27 +154,68 @@ function paint(c, s, from) {
   const base = erasing ? '#ffffff' : s.color;
   const rainbow = !!(s.rainbow && !erasing);
   if (s.tool === 'stamp') {
-    const [x1, y1, x2, y2] = p, x = Math.min(x1, x2), y = Math.min(y1, y2);
-    const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1), cx = x + w / 2, cy = y + h / 2;
+    const [x1, y1, x2, y2] = p;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const len = Math.hypot(x2 - x1, y2 - y1), r = len / 2;
+    const a = len ? Math.atan2(y2 - y1, x2 - x1) : 0;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    c.save();
+    c.transform(cos, sin, -sin, cos, cx, cy);
     c.strokeStyle = base; c.beginPath();
-    if (s.shape === 'circle') c.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
-    else if (s.shape === 'square') c.rect(x, y, w, h);
+    if (s.shape === 'circle') c.arc(0, 0, r, 0, Math.PI * 2);
+    else if (s.shape === 'square') c.rect(-r, -r, len, len);
     else if (s.shape === 'triangle') {
-      c.moveTo(cx, y); c.lineTo(x + w, y + h); c.lineTo(x, y + h); c.closePath();
+      c.moveTo(0, -r * 0.92); c.lineTo(r * 0.9, r * 0.82); c.lineTo(-r * 0.9, r * 0.82); c.closePath();
     } else if (s.shape === 'star') {
       for (let i = 0; i < 10; i++) {
-        const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 0.42 : 1;
-        const point = [cx + Math.cos(a) * w / 2 * r, cy + Math.sin(a) * h / 2 * r];
+        const ang = -Math.PI / 2 + i * Math.PI / 5, rad = (i % 2 ? 0.42 : 1) * r;
+        const point = [Math.cos(ang) * rad, Math.sin(ang) * rad];
         if (i === 0) c.moveTo(...point); else c.lineTo(...point);
       }
       c.closePath();
     } else if (s.shape === 'arrow') {
-      const a = Math.atan2(y2 - y1, x2 - x1), len = Math.min(w, h) * 0.4;
-      c.moveTo(x1, y1); c.lineTo(x2, y2);
-      c.moveTo(x2 - Math.cos(a - Math.PI / 6) * len, y2 - Math.sin(a - Math.PI / 6) * len);
-      c.lineTo(x2, y2); c.lineTo(x2 - Math.cos(a + Math.PI / 6) * len, y2 - Math.sin(a + Math.PI / 6) * len);
+      const head = len * 0.35;
+      c.moveTo(-r, 0); c.lineTo(r, 0);
+      c.moveTo(r - Math.cos(Math.PI / 6) * head, -Math.sin(Math.PI / 6) * head);
+      c.lineTo(r, 0);
+      c.lineTo(r - Math.cos(Math.PI / 6) * head, Math.sin(Math.PI / 6) * head);
+    } else if (s.shape === 'heart') {
+      c.moveTo(0, r * 0.9);
+      c.bezierCurveTo(-r * 1.15, r * 0.25, -r * 0.95, -r * 0.85, 0, -r * 0.32);
+      c.bezierCurveTo(r * 0.95, -r * 0.85, r * 1.15, r * 0.25, 0, r * 0.9);
+      c.closePath();
+    } else if (s.shape === 'moon') {
+      const mr = r * 0.9, tx = mr * Math.cos(-0.38 * Math.PI), ty = mr * Math.sin(-0.38 * Math.PI);
+      c.arc(0, 0, mr, -0.38 * Math.PI, 0.38 * Math.PI, true);
+      c.quadraticCurveTo(-r * 0.25, 0, tx, ty);
+      c.closePath();
+    } else if (s.shape === 'cloud') {
+      c.moveTo(-r * 0.6, r * 0.42);
+      c.lineTo(r * 0.62, r * 0.42);
+      c.bezierCurveTo(r * 0.98, r * 0.42, r * 0.98, -r * 0.14, r * 0.56, -r * 0.12);
+      c.bezierCurveTo(r * 0.52, -r * 0.68, -r * 0.12, -r * 0.72, -r * 0.22, -r * 0.32);
+      c.bezierCurveTo(-r * 0.55, -r * 0.52, -r * 0.82, -r * 0.25, -r * 0.72, r * 0.05);
+      c.bezierCurveTo(-r * 0.98, r * 0.12, -r * 0.92, r * 0.42, -r * 0.6, r * 0.42);
+      c.closePath();
+    } else if (s.shape === 'bolt') {
+      c.moveTo(r * 0.18, -r * 0.92);
+      c.lineTo(-r * 0.55, r * 0.08);
+      c.lineTo(-r * 0.04, r * 0.08);
+      c.lineTo(-r * 0.22, r * 0.92);
+      c.lineTo(r * 0.58, -r * 0.1);
+      c.lineTo(r * 0.06, -r * 0.1);
+      c.closePath();
+    } else if (s.shape === 'eye') {
+      c.moveTo(-r * 0.92, 0);
+      c.quadraticCurveTo(0, -r * 0.78, r * 0.92, 0);
+      c.quadraticCurveTo(0, r * 0.78, -r * 0.92, 0);
+      c.closePath();
+      c.moveTo(r * 0.36, 0); c.arc(0, 0, r * 0.36, 0, Math.PI * 2);
+      c.moveTo(r * 0.14, 0); c.arc(0, 0, r * 0.14, 0, Math.PI * 2);
     }
-    c.stroke(); return;
+    c.stroke();
+    c.restore();
+    return;
   }
   if (s.tool === 'line' || s.tool === 'rect' || s.tool === 'ellipse') {
     const [x1, y1, x2, y2] = p;

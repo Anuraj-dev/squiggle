@@ -1,8 +1,8 @@
 // Rendering contracts, exercised through the real board.js paint code with a
 // small recording 2D context (tracks the transform and a pixel buffer).
 import { expect, test } from 'bun:test';
-import { W, H } from './public/shared.js';
-import { applyStroke, drawStroke, floodRegion, paintThumb, setCanvasFactory, views } from './public/board.js';
+import { W, H, STAMP_SHAPES } from './public/shared.js';
+import { applyStroke, drawLiveStroke, drawStroke, floodRegion, paintPaper, paintThumb, setCanvasFactory, views } from './public/board.js';
 
 class FakeCtx {
   constructor(w, h) {
@@ -11,6 +11,7 @@ class FakeCtx {
     this.m = [1, 0, 0, 1, 0, 0];
     this.stack = [];
     this.ops = [];
+    this.strokes = [];
     this.globalAlpha = 1;
   }
   save() { this.stack.push({ m: [...this.m], a: this.globalAlpha }); }
@@ -26,10 +27,11 @@ class FakeCtx {
   moveTo(x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   lineTo(x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   quadraticCurveTo(cx, cy, x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
+  bezierCurveTo(c1x, c1y, c2x, c2y, x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   arc(x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   ellipse(x, y) { this.ops.push(['pt', ...this.pt(x, y)]); }
   rect(x, y, w, h) { this.ops.push(['pt', ...this.pt(x, y)], ['pt', ...this.pt(x + w, y + h)]); }
-  beginPath() {} stroke() {} fill() {} closePath() {}
+  beginPath() {} stroke() { this.strokes.push(this.strokeStyle); } fill() { this.strokes.push(this.fillStyle); } closePath() {}
   clip(rule) { this.ops.push(['clip', rule]); }
   createLinearGradient() { return { addColorStop() {} }; }
   fillRect(x, y, w, h) {
@@ -141,14 +143,58 @@ test('forbidden zones clip canonical ink and survive thumbnail rendering', () =>
   expect(thumb.ops[0][1].ctx.ops.some((o) => o[0] === 'clip' && o[1] === 'evenodd')).toBe(true);
 });
 
-test('stamps draw bounded vector paths, including directional arrow heads', () => {
-  for (const shape of ['circle', 'square', 'triangle', 'star', 'arrow']) {
+test('stamps draw all shapes with size and rotation from drag vector', () => {
+  for (const shape of STAMP_SHAPES) {
     const c = new FakeCtx(W, H);
-    drawStroke(c, { id: shape, tool: 'stamp', shape, pts: [100, 100, 200, 200], size: 4, color: '#000000' });
+    drawStroke(c, { id: shape, tool: 'stamp', shape, pts: [100, 100, 200, 100], size: 4, color: '#000000' });
     expect(pts(c).length).toBeGreaterThan(0);
-    for (const [x, y] of pts(c)) { expect(x).toBeGreaterThanOrEqual(100); expect(x).toBeLessThanOrEqual(200); expect(y).toBeGreaterThanOrEqual(100); expect(y).toBeLessThanOrEqual(200); }
+    for (const [x, y] of pts(c)) {
+      expect(x).toBeGreaterThanOrEqual(99); expect(x).toBeLessThanOrEqual(201);
+      expect(y).toBeGreaterThanOrEqual(99 - 50); expect(y).toBeLessThanOrEqual(151);
+    }
   }
+  // Rotating 90 degrees rotates the shape path around its center.
+  const upright = new FakeCtx(W, H), rotated = new FakeCtx(W, H);
+  drawStroke(upright, { id: 'h1', tool: 'stamp', shape: 'heart', pts: [100, 100, 200, 100], size: 4, color: '#000000' });
+  drawStroke(rotated, { id: 'h2', tool: 'stamp', shape: 'heart', pts: [150, 50, 150, 150], size: 4, color: '#000000' });
+  expect(pts(rotated).map(([x, y]) => [Math.round(x), Math.round(y)]))
+    .not.toEqual(pts(upright).map(([x, y]) => [Math.round(x), Math.round(y)]));
   const c = new FakeCtx(W, H);
   drawStroke(c, { id: 'left', tool: 'stamp', shape: 'arrow', pts: [200, 200, 100, 100], size: 4, color: '#000000' });
-  expect(pts(c).slice(0, 2)).toEqual([[200, 200], [100, 100]]);
+  expect(pts(c).slice(0, 2).map(([x, y]) => [Math.round(x), Math.round(y)])).toEqual([[200, 200], [100, 100]]);
+});
+
+test('Gravity Ink slides strokes down deterministically across live and gallery renders', () => {
+  const s = { id: 'g', tool: 'line', size: 4, color: '#000000', pts: [100, 100, 200, 100], t: 1000, gravity: true };
+  const live = new FakeCtx(W, H);
+  drawStroke(live, s, 0, { gameMs: 6000 });
+  expect(pts(live)).toEqual([[100, 150], [200, 150]]);
+  const thumb = new FakeCtx(280, 210);
+  paintThumb(thumb, 280, 210, [s], { gameMs: 6000 });
+  expect(pts(thumb.ops[0][1].ctx).slice(-2)).toEqual([[100, 150], [200, 150]]);
+});
+
+test('Decoy Doodle renders decoys again after erasers so they cannot be erased', () => {
+  const c = new FakeCtx(W, H);
+  const decoy = { id: 'decoy:0', by: null, tool: 'line', size: 10, color: '#1d1b1a', pts: [10, 10, 50, 50], decoy: true };
+  const eraser = { id: 'p:1', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
+  paintPaper(c, [decoy, eraser]);
+  expect(c.strokes).toEqual(['#1d1b1a', '#ffffff', '#1d1b1a']);
+});
+
+test('live incremental strokes leave decoys on top, as a full repaint does', () => {
+  const decoy = { id: 'decoy:0', by: null, tool: 'line', size: 10, color: '#1d1b1a', pts: [10, 10, 50, 50], decoy: true };
+  const white = { id: 'p:1', by: 'p', tool: 'line', size: 20, color: '#ffffff', pts: [10, 10, 50, 50] };
+  const eraser = { id: 'p:2', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
+  const strokes = [decoy, white, eraser];
+  const live = new FakeCtx(W, H), full = new FakeCtx(W, H);
+  drawLiveStroke(live, strokes, decoy);
+  drawLiveStroke(live, strokes, white);
+  drawLiveStroke(live, strokes, eraser);
+  paintPaper(full, strokes);
+  expect(live.strokes.at(-1)).toBe('#1d1b1a');
+  expect(full.strokes.at(-1)).toBe('#1d1b1a');
+  // A decoy itself is not drawn twice by the live path.
+  expect(live.strokes.slice(0, 1)).toEqual(['#1d1b1a']);
+  expect(live.strokes[1]).toBe('#ffffff');
 });

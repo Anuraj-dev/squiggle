@@ -5,9 +5,11 @@ import {
   guesserPts, drawerPts, allBonus, scoreMult, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
   inkCost, trimInk, turnProgress, viewStrength, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
+  gravityOffset, strokeMaxY, decoyStrokes, recentInkCenter, macroView,
 } from './public/shared.js';
 
 test('stamp shapes and bounds are validated without enabling stamps in ordinary turns', () => {
+  expect(STAMP_SHAPES).toEqual(['circle', 'triangle', 'square', 'arrow', 'star', 'heart', 'moon', 'cloud', 'bolt', 'eye']);
   for (const shape of STAMP_SHAPES) {
     const s = validateStroke({ id: 's', tool: 'stamp', shape, pts: [0, 0, 0, 0] });
     expect(s.ok).toBe(true); expect(s.shape).toBe(shape);
@@ -15,10 +17,20 @@ test('stamp shapes and bounds are validated without enabling stamps in ordinary 
   expect(validateStroke({ id: 's', tool: 'stamp', shape: 'script', pts: [0, 0, 0, 0] }).ok).toBe(false);
   expect(allowedTool(null, 'stamp')).toBe(false);
   expect(allowedTool({ id: 'stamps' }, 'pen')).toBe(false);
-  expect(stampBounds([0, 0, 0, 0])).toEqual([0, 0, 80, 80]);
-  expect(stampBounds([999, 749, 999, 749])).toEqual([919, 669, 999, 749]);
-  expect(stampBounds([900, 700, 100, 100])).toEqual([900, 700, 660, 460]);
-  for (const shape of ['circle', 'square']) expect(stampBounds([100, 100, 220, 150], shape)).toEqual([100, 100, 220, 220]);
+  // Taps produce an upright 80px horizontal vector kept inside the paper.
+  expect(stampBounds([0, 0, 0, 0])).toEqual([0, 40, 80, 40]);
+  expect(stampBounds([999, 749, 999, 749])).toEqual([919, 709, 999, 709]);
+  // Drags preserve angle, clamp size to [30, 240], and keep rotated corners on paper.
+  const diag = stampBounds([900, 700, 100, 100], 'square');
+  expect(Math.hypot(diag[2] - diag[0], diag[3] - diag[1])).toBeCloseTo(240, 0);
+  expect(Math.atan2(diag[3] - diag[1], diag[2] - diag[0])).toBeCloseTo(Math.atan2(-600, -800), 1);
+  const cx = (diag[0] + diag[2]) / 2, cy = (diag[1] + diag[3]) / 2;
+  const pad = 120 * (Math.abs((diag[2] - diag[0]) / 240) + Math.abs((diag[3] - diag[1]) / 240));
+  expect(cy + pad).toBeLessThanOrEqual(H - 1);
+  expect(cx + pad).toBeLessThanOrEqual(W - 1);
+  // Tiny drag is clamped up to minimum size 30 while keeping direction.
+  const tiny = stampBounds([200, 200, 200, 205], 'heart');
+  expect(tiny).toEqual([200, 200, 200, 230]);
 });
 
 test('slippery paths are continuous across packet boundaries and stay close to the pointer', () => {
@@ -35,6 +47,10 @@ test('new artist restrictions and deterministic drawing parameters are bounded',
     for (const tool of ['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']) expect(allowedTool({ id }, tool)).toBe(allowed.includes(tool));
   }
   expect(allowedTool({ id: 'forbidden' }, 'fill')).toBe(false);
+  // Gravity Ink: fill and eraser would drift away from their target ink; undo stays.
+  expect(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp'].filter((t) => allowedTool({ id: 'gravity' }, t)))
+    .toEqual(['pen', 'line', 'rect', 'ellipse']);
+  expect(canUndo({ id: 'gravity' })).toBe(true);
   expect([shrinkingSize(0, 60000), shrinkingSize(30000, 60000), shrinkingSize(90000, 60000)]).toEqual([22, 13, 4]);
   for (const seed of [0, 12, 10000, 0xffffffff]) {
     const z = forbiddenZone(seed);
@@ -277,7 +293,62 @@ test('pickChaos honours the host list, repeats only when forced, and returns nul
 
 test('cleanChaosIds keeps known ids in canonical order and treats non-lists as everything', () => {
   expect(cleanChaosIds(['fog', 'nope', 'mirror', 'fog'])).toEqual(['mirror', 'fog']);
+  expect(cleanChaosIds(['laggy', 'batches'])).toEqual(['batches']);
+  expect(CHAOS_IDS).not.toContain('laggy');
+  expect(CHAOS_MODES.find((m) => m.id === 'batches')).toMatchObject({ icon: '🐌', name: 'Laggy Stream', mild: true });
   expect(cleanChaosIds([])).toEqual([]);
   expect(cleanChaosIds(undefined)).toEqual(CHAOS_IDS);
   expect(cleanChaosIds('fog')).toEqual(CHAOS_IDS);
+});
+
+test('gravityOffset slides at 10 px/s and caps so strokes stay on paper', () => {
+  expect(gravityOffset(0, 100)).toBe(0);
+  expect(gravityOffset(-500, 100)).toBe(0);
+  expect(gravityOffset(5000, 100)).toBe(50);
+  expect(gravityOffset(100000, 100)).toBe(H - 1 - 100);
+  expect(gravityOffset(5000, 730)).toBe(19);
+  expect(strokeMaxY({ tool: 'pen', pts: [10, 50, 20, 310, 30, 200] })).toBe(310);
+});
+
+test('decoyStrokes produces 1-2 deterministic dark medium strokes inside the paper', () => {
+  const a = decoyStrokes(12345);
+  expect(a).toEqual(decoyStrokes(12345));
+  expect(a.length).toBeGreaterThanOrEqual(1);
+  expect(a.length).toBeLessThanOrEqual(2);
+  for (const s of a) {
+    expect(s.decoy).toBe(true);
+    expect(s.by).toBeNull();
+    expect(s.tool).toBe('pen');
+    expect(s.size).toBe(10);
+    expect(s.color).toBe('#1d1b1a');
+    for (let i = 0; i < s.pts.length; i += 2) {
+      expect(s.pts[i]).toBeGreaterThanOrEqual(0);
+      expect(s.pts[i]).toBeLessThan(W);
+      expect(s.pts[i + 1]).toBeGreaterThanOrEqual(0);
+      expect(s.pts[i + 1]).toBeLessThan(H);
+    }
+  }
+  const counts = new Set(Array.from({ length: 20 }, (_, i) => decoyStrokes(i + 1).length));
+  expect(counts).toEqual(new Set([1, 2]));
+});
+
+test('macroView zooms 2.5x around recent ink, eases to 1x, and never shows outside the paper', () => {
+  expect(recentInkCenter([])).toEqual({ x: W / 2, y: H / 2 });
+  expect(recentInkCenter([
+    { tool: 'line', pts: [100, 100, 200, 200] },
+    { tool: 'eraser', pts: [800, 600, 900, 700] },
+  ])).toEqual({ x: 150, y: 150 });
+  expect(macroView({ x: W / 2, y: H / 2 }, 1)).toEqual({ zoom: 2.5, tx: 0, ty: 0 });
+  expect(macroView({ x: 0, y: 0 }, 1)).toEqual({ zoom: 2.5, tx: 0.75, ty: 0.75 });
+  expect(macroView({ x: W, y: H }, 1)).toEqual({ zoom: 2.5, tx: -0.75, ty: -0.75 });
+  expect(macroView({ x: 100, y: 100 }, 0)).toEqual({ zoom: 1, tx: 0, ty: 0 });
+});
+
+test('finale doubles the whole guesser and drawer award, chaos and streak included', () => {
+  const chaos = [{ id: 'mirror', seed: 1 }];
+  const g = { elapsed: 12000, scoreLen: 80000, diff: 'hard', chaos, streak: 3 };
+  expect(guesserPts({ ...g, finale: true })).toBe(guesserPts(g) * 2);
+  const d = { solved: 2, eligible: 3, diff: 'medium', chaos, all: false };
+  expect(drawerPts({ ...d, finale: true })).toBe(drawerPts(d) * 2);
+  expect(drawerPts({ ...d, eligible: 0, finale: true })).toBe(0);
 });

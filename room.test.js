@@ -1,8 +1,14 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
-import { clock, onMessage, onClose, rooms } from './game.js';
+import { clock, onMessage, onClose, rooms, setWordHistory, flushWordHistory, recapGuesses } from './game.js';
+import { WordHistory } from './history.js';
+import { DECK_BY_ID, DECK_CATALOG } from './decks.js';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { NEW_WORDS } from './words-new.js';
+import { canonKey } from './words.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
@@ -32,6 +38,7 @@ beforeEach(() => {
   for (const r of rooms.values()) r.clearTimers();
   rooms.clear();
   timers = [];
+  setWordHistory(new WordHistory());
 });
 
 function sock(name) {
@@ -501,15 +508,30 @@ test('host settings: word choices, hints, difficulty and chaos level', () => {
   expect([t.wordChoices, t.hints, t.difficulty, t.chaos]).toEqual([5, 0, 'mix', 'off']);
 });
 
-test('word set: the host picks the new bank, and unknown sets fall back to legacy', () => {
-  const ctx = setup(2, { customOnly: false, customWords: '', wordSet: 'new', difficulty: 'easy', wordChoices: 5 });
-  expect(ctx.room.settings.wordSet).toBe('new');
+test('decks: host picks decks, cards come from different decks with badges, unknown ids fall back', () => {
+  const ctx = setup(2, { customOnly: false, customWords: '', decks: ['tech', 'dev', 'bogus'], difficulty: 'easy', wordChoices: 2 });
+  expect(ctx.room.settings.decks).toEqual(['tech', 'dev']);
+  expect(ctx.ss[1].state().deckCatalog).toEqual(DECK_CATALOG);
   ctx.ss[0].do('start');
-  const pool = new Set(NEW_WORDS.easy);
-  expect(ctx.room.choices.map((c) => c.word).every((w) => pool.has(w))).toBe(true);
+  expect(ctx.ss[1].state().deckCatalog).toBeNull();
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const choices = drawer.state().choices;
+  expect(choices.map((c) => c.deck.id).sort()).toEqual(['dev', 'tech']);
+  for (const c of choices) {
+    expect(c.diff).toBe('easy');
+    expect(DECK_BY_ID.get(c.deck.id).easy).toContain(c.word);
+    expect(c.deck).toEqual({ id: c.deck.id, name: DECK_BY_ID.get(c.deck.id).name, icon: DECK_BY_ID.get(c.deck.id).icon });
+  }
+  // Guessers get neither the chosen word nor its deck.
+  drawer.act('choose', { i: 0 });
+  const g = ctx.ss.find((s) => s !== drawer).state();
+  expect(g.deck).toBeUndefined();
+  expect(g.word).toBeNull();
   ctx.room.toLobby();
-  ctx.ss[0].do('settings', { settings: { wordSet: 'bogus' } });
-  expect(ctx.room.settings.wordSet).toBe('legacy');
+  ctx.ss[0].do('settings', { settings: { decks: [] } });
+  expect(ctx.room.settings.decks).toEqual(['everyday', 'tech', 'memes']);
+  ctx.ss[0].do('settings', { settings: { decks: 'tech' } });
+  expect(ctx.room.settings.decks).toEqual(['everyday', 'tech', 'memes']);
 });
 
 test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
@@ -708,14 +730,16 @@ test('straight lines, stamps and forbidden zones are enforced on authoritative s
   expect(c.room.strokes[0].tool).toBe('line');
   c.room.chaos = tw('stamps');
   c.drawer.act('stroke', { s: { ...pen('stamp', [0, 0, 0, 0]), tool: 'stamp', shape: 'star', size: 80 } });
-  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'star', pts: [0, 0, 80, 80], size: 4 });
+  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'star', pts: [0, 40, 80, 40], size: 4 });
+  c.drawer.act('stroke', { s: { ...pen('heart', [100, 100, 200, 140]), tool: 'stamp', shape: 'heart', size: 10 } });
+  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'heart', size: 4 });
   c.drawer.act('stroke', { s: { ...pen('bad', [0, 0, 0, 0]), tool: 'stamp', shape: 'unknown' } });
-  expect(c.room.strokes).toHaveLength(2);
+  expect(c.room.strokes).toHaveLength(3);
   c.room.chaos = tw('forbidden');
   c.drawer.act('stroke', { s: { ...pen('zone', [0, 300, 999, 300]), forbidden: { x: 0, y: 0, w: 1000, h: 750 } } });
   expect(c.room.strokes.at(-1).forbidden).toEqual(forbiddenZone(7));
   c.drawer.act('stroke', { s: { ...pen('fill', [1, 1]), tool: 'fill' } });
-  expect(c.room.strokes).toHaveLength(3);
+  expect(c.room.strokes).toHaveLength(4);
 });
 
 test('shrinking brush uses unpaused original turn time and slippery points follow packet tails', () => {
@@ -843,7 +867,7 @@ test('host-picked challenges: only they roll, one-sided picks follow the preset,
 });
 
 test('only the host in the lobby can change the challenge list; unknown ids are dropped; omitting it keeps it', () => {
-  const ctx = setup(2, { chaosIds: ['mirror', 'bogus', 'fog'] });
+  const ctx = setup(2, { chaosIds: ['mirror', 'laggy', 'bogus', 'fog'] });
   expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
   ctx.ss[1].do('settings', { settings: { chaosIds: [] } });
   expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
@@ -1021,4 +1045,512 @@ test('going back to the lobby clears a host pause', () => {
   expect(ctx.room.state).toBe('lobby');
   expect(ctx.room.hostPaused).toBe(false);
   expect(drawer.state().paused).toBeNull();
+});
+
+test('sentence guesses score; a list containing the answer stays private and spends a Limited attempt', () => {
+  const c = startChallenges(3, null, 'limited'), [a, b] = c.guessers, word = c.room.word;
+  const pa = c.room.players.get(a.id);
+  let ma = a.mark(), mb = b.mark();
+  a.act('chat', { text: `${word} dog car`, requestId: 'list' });
+  expect(a.chats(ma).map((m) => [m.kind, m.text])).toEqual([['close', `“${word} dog car” — try one guess. Not shown to others.`]]);
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', requestId: 'list', accepted: false });
+  expect(b.chats(mb)).toEqual([]);
+  expect(c.room.guessBudget(pa).remaining).toBe(2);
+  a.act('chat', { text: `${word} dog car` }); // repeats stay free
+  expect(c.room.guessBudget(pa).remaining).toBe(2);
+  a.act('chat', { text: 'zzz' }); a.act('chat', { text: 'yyy' });
+  expect(c.room.guessBudget(pa).remaining).toBe(0);
+  ma = a.mark();
+  a.act('chat', { text: `${word} or cow` });
+  expect(a.chats(ma)).toEqual([]);
+  expect(a.since(ma, 'toast')[0].text).toMatch(/Next attempt/);
+  expect(b.chats(mb).map((m) => m.text)).toEqual(['zzz', 'yyy']);
+  b.act('chat', { text: `is it a ${word}?` });
+  expect(c.room.guessed.has(b.id)).toBe(true);
+});
+
+test('lists with a short-answer plural or a long answer stay private and spend a Limited attempt', () => {
+  for (const [answer, list] of [['cd', 'CDs or DVDs'], ['a dog with a red hat', 'a dog with a red hat or cat']]) {
+    const ctx = setup(3, { hints: 0, customWords: 'cd, a dog with a red hat' });
+    ctx.ss[0].do('start');
+    ctx.room.chaos = null;
+    ctx.room.guesserChaos = tw('limited');
+    const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+    drawer.act('choose', { i: ctx.room.choices.findIndex((c) => c.word === answer) });
+    expect(ctx.room.word).toBe(answer);
+    const [a, b] = ctx.ss.filter((s) => s !== drawer);
+    const ma = a.mark(), mb = b.mark();
+    a.act('chat', { text: list });
+    expect(a.chats(ma).map((m) => m.kind)).toEqual(['close']);
+    expect(b.chats(mb)).toEqual([]);
+    expect(drawer.chats(ma).filter((m) => m.text === list)).toEqual([]);
+    expect(ctx.room.guessBudget(ctx.room.players.get(a.id)).remaining).toBe(2);
+    expect(ctx.room.guessed.has(a.id)).toBe(false);
+  }
+});
+
+// Deals straight from a lobby room: each call is a new turn one second later.
+function deal(room, n = room.settings.wordChoices, avoid) {
+  room.turnSeq++;
+  now += 1000;
+  return room.pickWords(n, avoid).map((c) => c.word);
+}
+const EIGHT = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
+
+test('word memory: never-seen first, then only the oldest 25%, so a word returns after 75% of its pool', () => {
+  const { room } = setup(2, { customWords: EIGHT.join(','), wordChoices: 1 });
+  const seq = Array.from({ length: 48 }, () => deal(room)[0]);
+  expect(new Set(seq.slice(0, 8)).size).toBe(8);
+  expect(seq.slice(0, 2)).toContain(seq[8]);
+  for (let i = 0; i < seq.length; i++) {
+    const back = seq.indexOf(seq[i], i + 1);
+    if (back > 0) expect(back - i).toBeGreaterThanOrEqual(7);
+  }
+});
+
+test('family cooldown skips shared content words, then relaxes to the window, then to anything', () => {
+  const { room } = setup(2, { customWords: 'golf ball', wordChoices: 1 });
+  expect(deal(room)).toEqual(['golf ball']);
+  room.settings.customWords = ['golf ball', 'golf carts', 'golf club', 'apple', 'banana', 'cherry', 'mango', 'lemon'];
+  const at = (oldest) => {
+    room.customSeen = new Map(room.settings.customWords.map((w) => [w, now]));
+    oldest.forEach((w, i) => room.customSeen.set(w, i + 1));
+  };
+  // Window = two oldest; "golf carts" shares "golf" with last turn's card.
+  at(['golf carts', 'apple']);
+  expect(deal(room)).toEqual(['apple']);
+  // Both window words are golf: the cooldown gives way before the window does.
+  at(['golf carts', 'golf club']);
+  expect(['golf carts', 'golf club']).toContain(deal(room)[0]);
+  // Five cards from a window of two: the rest come from anywhere, all distinct.
+  at(['banana', 'cherry']);
+  const five = deal(room, 5);
+  expect(new Set(five).size).toBe(5);
+  expect(five).toEqual(expect.arrayContaining(['banana', 'cherry']));
+});
+
+test('custom words are one card per deal, rotate by recency and are never written to disk', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'squiggle-room-')), 'h.json');
+  const history = new WordHistory({ path, valid: null, delay: 1e9 });
+  setWordHistory(history);
+  const custom = ['my secret sam', 'inside joke', 'aunt rita', 'lucky sock'];
+  const ctx = setup(2, { customOnly: false, customWords: custom.join(','), wordChoices: 3 });
+  ctx.ss[0].do('start');
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const first = ctx.room.choices.map((c) => c.word);
+  drawer.act('reroll');
+  const rerolled = ctx.room.choices.map((c) => c.word);
+  const shown = [], counts = new Map();
+  for (let i = 0; i < 200; i++) {
+    const cards = deal(ctx.room).filter((w) => custom.includes(w));
+    expect(cards.length).toBeLessThanOrEqual(1);
+    for (const w of cards) { shown.push(w); counts.set(w, (counts.get(w) || 0) + 1); }
+  }
+  // Each custom word comes back only after the other three: an even rotation,
+  // not the old "same unpicked custom word on ~87.5% of turns".
+  for (let i = 4; i < shown.length; i++) expect(shown.slice(i - 3, i)).not.toContain(shown[i]);
+  for (const w of custom) expect(counts.get(w) / 200).toBeLessThan(0.25);
+  history.flush();
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  // Disk keys are canonical ("t-shirt" is saved as "t shirt").
+  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, canonKey(w))).toBe(!custom.includes(w));
+  for (const w of custom) expect(saved).not.toHaveProperty(w);
+  expect(Object.keys(saved).length).toBeGreaterThan(10);
+});
+
+test('flushWordHistory writes a pending debounced save immediately (shutdown path)', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'squiggle-room-')), 'h.json');
+  setWordHistory(new WordHistory({ path, valid: null, delay: 1e9 }));
+  flushWordHistory(); // nothing pending: no file
+  expect(existsSync(path)).toBe(false);
+  const ctx = setup(2, { customOnly: false, customWords: '' });
+  ctx.ss[0].do('start');
+  expect(existsSync(path)).toBe(false);
+  flushWordHistory();
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  expect(Object.keys(saved).length).toBe(ctx.room.choices.length);
+});
+
+test('word memory survives a rematch and dealt cards come in shuffled order', () => {
+  const ctx = setup(2, { customWords: EIGHT.join(','), wordChoices: 1 });
+  ctx.ss[0].do('start');
+  const firstGame = ctx.room.choices[0].word;
+  ctx.room.toLobby();
+  ctx.ss[0].do('start');
+  expect(ctx.room.choices[0].word).not.toBe(firstGame);
+  expect(ctx.room.customSeen.has(firstGame)).toBe(true);
+
+  const mix = setup(2, { customOnly: false, customWords: '', wordChoices: 3 }).room;
+  const DIFFS = ['easy', 'medium', 'hard'];
+  let unsorted = false, sameTier = false;
+  const firstDeck = new Set();
+  for (let i = 0; i < 40; i++) {
+    const cards = mix.pickWords(3);
+    expect(new Set(cards.map((c) => c.deck.id)).size).toBe(3);
+    firstDeck.add(cards[0].deck.id);
+    const d = cards.map((c) => DIFFS.indexOf(c.diff));
+    if (d.some((x, k) => k && x < d[k - 1])) unsorted = true;
+    if (new Set(d).size < 3) sameTier = true;
+  }
+  expect(unsorted && sameTier).toBe(true);
+  expect(firstDeck.size).toBe(3);
+});
+
+test('decoy doodle adds seeded strokes from frame 1 that survive undo, redo and clear while artist strokes undo/redo normally', () => {
+  const c = startChallenges(3, 'decoy', null);
+  const decoys = c.room.strokes.filter((s) => s.decoy);
+  expect(decoys.length).toBeGreaterThanOrEqual(1);
+  expect(decoys.length).toBeLessThanOrEqual(2);
+  for (const g of c.guessers) {
+    expect(g.out.findLast((m) => m.t === 'clear').strokes).toEqual(decoys);
+  }
+  const n0 = decoys.length;
+  // Artist cannot undo decoy strokes, even before drawing anything.
+  c.drawer.act('undo');
+  expect(c.room.strokes).toHaveLength(n0);
+  // Artist strokes undo and redo normally without touching decoys.
+  c.drawer.act('stroke', { s: pen('a1', [10, 10, 20, 20]) });
+  c.drawer.act('stroke', { s: pen('a2', [30, 30, 40, 40]) });
+  expect(c.room.strokes).toHaveLength(n0 + 2);
+  c.drawer.act('undo');
+  expect(c.room.strokes).toHaveLength(n0 + 1);
+  c.drawer.act('redo');
+  expect(c.room.strokes).toHaveLength(n0 + 2);
+  c.drawer.act('undo');
+  c.drawer.act('undo');
+  c.drawer.act('undo');
+  expect(c.room.strokes).toEqual(decoys);
+  // Redo still restores artist stroke after hitting the decoy floor; clear wipes artist strokes and redo stack, keeping decoys.
+  c.drawer.act('redo');
+  expect(c.room.strokes).toHaveLength(n0 + 1);
+  c.drawer.act('clear');
+  expect(c.room.strokes).toEqual(decoys);
+  for (const g of c.guessers) expect(g.out.findLast((m) => m.t === 'clear').strokes).toEqual(decoys);
+  c.drawer.act('redo');
+  expect(c.room.strokes).toEqual(decoys);
+  // Gallery includes the decoy strokes.
+  c.drawer.act('skip');
+  expect(c.room.gallery.at(-1).strokes).toEqual(decoys);
+});
+
+test('gravity ink records turn endMs on reveal and gallery for deterministic rendering', () => {
+  const c = startChallenges(2, 'gravity', null);
+  c.drawer.act('stroke', { s: pen('g1', [50, 50, 100, 50]) });
+  expect(c.room.strokes[0].gravity).toBe(true);
+  advance(12345);
+  c.drawer.act('skip');
+  expect(c.room.reveal.endMs).toBe(12345);
+  expect(c.room.gallery.at(-1).endMs).toBe(12345);
+  expect(c.room.gallery.at(-1).deck).toEqual({ id: expect.any(String), name: expect.any(String), icon: expect.any(String) });
+});
+
+// Draws one stroke and skips, so the turn lands in the gallery; then leaves the reveal.
+function drawAndSkip(ctx) {
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  drawer.act('choose', { i: 0 });
+  drawer.act('stroke', { s: pen(`s${ctx.room.turnSeq}`, [5, 5, 50, 50]) });
+  drawer.act('skip');
+  expect(ctx.room.state).toBe('reveal');
+  advance(REVEAL_MS);
+  return drawer;
+}
+
+test('recap: most repeated wrong guess first, then longest; one per player; no close or answer-mentioning guesses', () => {
+  const g = (id, text, close = false) => ({ id, text, close });
+  const list = [
+    g('a', 'toilet'), g('b', 'Toilet!'), g('c', 'sad potato'), g('a', 'a very long guess indeed'),
+    g('d', 'rabbt', true), g('d', 'big rabbit ears'), g('c', 'toilet'), g('e', 'hat'),
+  ];
+  expect(recapGuesses(list, 'rabbit')).toEqual([
+    { text: 'toilet', by: 'b', n: 3 },
+    { text: 'a very long guess indeed', by: 'a', n: 1 },
+    { text: 'sad potato', by: 'c', n: 1 },
+  ]);
+  // A player whose guesses all went to earlier picks is skipped, not repeated.
+  expect(recapGuesses([g('a', 'one'), g('a', 'two')], 'rabbit')).toEqual([{ text: 'one', by: 'a', n: 1 }]);
+  expect(recapGuesses([g('a', 'rabbt', true)], 'rabbit')).toEqual([]);
+});
+
+test('reveal carries the wrong-guess recap; close guesses stay out', () => {
+  const ctx = setup(4);
+  const { drawer, guessers: [b, c, d] } = startDrawing(ctx);
+  b.act('chat', { text: 'sad potato' });
+  c.act('chat', { text: 'sad potato' });
+  c.act('chat', { text: 'toilet' });
+  // A near typo ("sooo close") from a player with no other guess: only the
+  // close rule can keep it out of the recap.
+  d.act('chat', { text: ctx.room.word.slice(0, -1) });
+  expect(ctx.room.wrongGuesses.at(-1)).toMatchObject({ id: d.id, close: true });
+  drawer.act('skip');
+  expect(ctx.room.reveal.recap.map((r) => r.text)).toEqual(['sad potato', 'toilet']);
+  expect(new Set(ctx.room.reveal.recap.map((r) => r.by)).size).toBe(2);
+  expect(ctx.room.reveal.recap.some((r) => r.by === d.id)).toBe(false);
+  expect(b.state().reveal.recap.length).toBe(2);
+  advance(REVEAL_MS);
+  expect(ctx.room.wrongGuesses).toEqual([]);
+});
+
+test('finale: only the last drawer of the last round scores 2× for guessers and drawer', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  expect(ctx.room.finale).toBe(false);
+  drawAndSkip(ctx);
+  expect(ctx.room.state).toBe('choosing');
+  expect(ctx.room.finale).toBe(true);
+  expect(ctx.ss[0].state().finale).toBe(true);
+  expect(ctx.ss[0].chats().some((m) => /FINALE/.test(m.text))).toBe(true);
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const [b, c] = ctx.ss.filter((s) => s !== drawer);
+  drawer.act('choose', { i: 0 });
+  const r = ctx.room;
+  const modes = () => [r.chaos, r.guesserChaos].filter(Boolean);
+  const before = r.players.get(b.id).score;
+  advance(10000);
+  b.act('chat', { text: r.word });
+  const pts = r.players.get(b.id).score - before;
+  const base = guesserPts({ elapsed: 10000, scoreLen: r.scoreLen, diff: r.diff, chaos: modes(), streak: 1 });
+  expect(pts).toBe(base * 2);
+  expect(r.players.get(drawer.id).score).toBe(drawerPts({ solved: 1, eligible: 2, diff: r.diff, chaos: modes() }) * 2);
+  c.act('chat', { text: r.word });
+  expect(r.reveal.finale).toBe(true);
+  expect(r.reveal.deltas.find((d) => d.drawer).pts).toBe(drawerPts({ solved: 2, eligible: 2, diff: r.diff, chaos: modes(), all: true }) * 2);
+  advance(REVEAL_MS);
+  expect(r.state).toBe('end');
+  expect(r.finale).toBe(false);
+});
+
+test('finale: when the planned last drawer leaves, the actual last turn becomes the finale and earlier points double', () => {
+  const ctx = setup(4);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  expect(r.finale).toBe(false);
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const b = ctx.ss.find((s) => s !== drawer && s !== last);
+  const before = r.players.get(b.id).score;
+  advance(5000);
+  b.act('chat', { text: r.word });
+  const plain = r.players.get(b.id).score - before;
+  const drawerPlain = r.players.get(drawer.id).score;
+  last.do('leave');
+  expect(r.finale).toBe(true);
+  expect(r.state).toBe('drawing');
+  expect(r.players.get(b.id).score - before).toBe(plain * 2);
+  expect(r.guessed.get(b.id).pts).toBe(plain * 2);
+  expect(r.players.get(drawer.id).score).toBeGreaterThan(drawerPlain);
+  expect(b.state().finale).toBe(true);
+});
+
+test('finale: a last drawer who drops also makes the current turn the finale', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  expect(r.finale).toBe(false);
+  ctx.ss.find((s) => s.id === r.queue[0]).drop();
+  expect(r.finale).toBe(true);
+});
+
+test('finale: at most one per game; a reconnected or fresh drawer after it plays at normal points', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const token = last.out.find((m) => m.t === 'welcome').token;
+  last.drop();
+  expect(r.finale).toBe(true);
+  // Back within grace: still queued for this round, but the finale is spent.
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: last.name, token });
+  back.id = last.id;
+  const fresh = sock('F');
+  fresh.do('join', { room: ctx.code, name: 'F' });
+  fresh.id = fresh.out.find((m) => m.t === 'welcome').id;
+  drawer.act('skip');
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(back.id);
+  expect(r.finale).toBe(false);
+  back.act('choose', { i: 0 });
+  const guesser = ctx.ss.find((s) => s.id !== back.id && s !== last);
+  const before = r.players.get(guesser.id).score;
+  advance(10000);
+  guesser.act('chat', { text: r.word });
+  const modes = [r.chaos, r.guesserChaos].filter(Boolean);
+  expect(r.players.get(guesser.id).score - before).toBe(guesserPts({ elapsed: 10000, scoreLen: r.scoreLen, diff: r.diff, chaos: modes, streak: 1 }));
+  back.act('skip'); // ignored: someone solved, so end by time
+  advance(r.timeLeft() + 1);
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(fresh.id);
+  expect(r.finale).toBe(false);
+  expect(ctx.ss[0].chats().filter((m) => /FINALE/.test(m.text))).toHaveLength(1);
+});
+
+test('finale: a finale drawer who leaves before picking passes the finale to the real last turn', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  expect(r.state).toBe('choosing');
+  const chooser = ctx.ss.find((s) => s.id === r.drawerId);
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const token = last.out.find((m) => m.t === 'welcome').token;
+  last.drop();
+  expect(r.finale).toBe(true);
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: last.name, token });
+  back.id = last.id;
+  chooser.do('leave');
+  expect(r.drawerId).toBe(back.id);
+  expect(r.finale).toBe(true);
+  back.act('choose', { i: 0 });
+  advance(r.timeLeft() + 1);
+  expect(r.reveal.finale).toBe(true);
+});
+
+test('finale: the planned last drawer leaving during reveal changes nothing', () => {
+  const ctx = setup(4);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const b = ctx.ss.find((s) => s !== drawer && s !== last && r.turnEligible.includes(s.id) && s.id !== r.queue[0]);
+  advance(5000);
+  b.act('chat', { text: r.word });
+  advance(r.timeLeft() + 1);
+  expect(r.state).toBe('reveal');
+  const scores = [...r.players.values()].map((p) => p.score);
+  const reveal = structuredClone(r.reveal);
+  last.do('leave');
+  expect(r.finale).toBe(false);
+  expect(r.reveal).toEqual(reveal);
+  expect(r.reveal.allBonus).toBe(0);
+  expect([...r.players.values()].map((p) => p.score)).toEqual(scores.filter((_, i) => i !== ctx.ss.indexOf(last)));
+  expect(ctx.ss[0].chats().some((m) => /FINALE/.test(m.text))).toBe(false);
+  advance(REVEAL_MS);
+  expect(r.state).toBe('end');
+});
+
+test('MVP vote: end state only, not your own, one changeable vote each, ties share, no points', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  a.do('start');
+  const byDrawer = {};
+  for (let i = 0; i < 3; i++) {
+    const d = drawAndSkip(ctx);
+    byDrawer[d.id] = ctx.room.gallery.at(-1).id;
+  }
+  const r = ctx.room;
+  expect(r.state).toBe('end');
+  expect(b.out.findLast((m) => m.t === 'gallery').gallery.map((g) => g.id)).toEqual([1, 2, 3]);
+  const scores = () => [...r.players.values()].map((p) => p.score);
+  const before = scores();
+  a.do('vote', { id: byDrawer[a.id] });
+  a.do('vote', { id: 999 });
+  expect(a.state().mvp).toEqual({ tally: {}, winners: [], mine: null, canVote: true });
+  a.do('vote', { id: byDrawer[b.id] });
+  b.do('vote', { id: byDrawer[c.id] });
+  expect(c.state().mvp.winners.sort()).toEqual([byDrawer[b.id], byDrawer[c.id]].sort());
+  c.do('vote', { id: byDrawer[b.id] });
+  expect(c.state().mvp).toEqual({ tally: { [byDrawer[b.id]]: 2, [byDrawer[c.id]]: 1 }, winners: [byDrawer[b.id]], mine: byDrawer[b.id], canVote: true });
+  a.do('vote', { id: byDrawer[c.id] }); // changing a vote moves it
+  expect(a.state().mvp.tally).toEqual({ [byDrawer[b.id]]: 1, [byDrawer[c.id]]: 2 });
+  a.do('vote', { id: null });
+  expect(a.state().mvp.mine).toBe(null);
+  expect(scores()).toEqual(before);
+  a.do('again');
+  expect(r.votes.size).toBe(0);
+  a.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(0);
+});
+
+test('MVP vote: leaving drops the vote; fresh or post-grace joins cannot vote; a reconnected artist still cannot self-vote; tokens stay private', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  a.do('start');
+  const byDrawer = {};
+  for (let i = 0; i < 3; i++) byDrawer[drawAndSkip(ctx).id] = ctx.room.gallery.at(-1).id;
+  const r = ctx.room;
+  expect(r.state).toBe('end');
+  const token = (s) => s.out.find((m) => m.t === 'welcome').token;
+  // A leaver's vote is removed from the tally.
+  c.do('vote', { id: byDrawer[a.id] });
+  expect(a.state().mvp.tally).toEqual({ [byDrawer[a.id]]: 1 });
+  c.do('leave');
+  expect(a.state().mvp.tally).toEqual({});
+  // A fresh join at the end screen cannot vote.
+  const f = sock('F');
+  f.do('join', { room: ctx.code, name: 'F' });
+  f.do('vote', { id: byDrawer[a.id] });
+  expect(r.votes.size).toBe(0);
+  expect(f.since(0, 'toast').at(-1).text).toMatch(/Only players/);
+  expect(f.state().mvp.canVote).toBe(false);
+  // The artist reconnecting within grace is the same voter and still cannot vote for their own drawing.
+  const tb = token(b);
+  b.drop();
+  const b2 = sock('B2');
+  b2.do('join', { room: ctx.code, name: 'B', token: tb });
+  b2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(0);
+  b2.do('vote', { id: byDrawer[a.id] });
+  expect(b2.state().mvp.mine).toBe(byDrawer[a.id]);
+  // After the grace window a rejoin is a new player with a new token: no vote.
+  const ta = token(a);
+  a.drop();
+  advance(GAME_GRACE + 1);
+  expect(r.players.has(a.id)).toBe(false);
+  const a2 = sock('A2');
+  a2.do('join', { room: ctx.code, name: 'A', token: ta });
+  expect(a2.out.find((m) => m.t === 'welcome').token).not.toBe(ta);
+  a2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(1);
+  // No reconnect token reaches any client in snapshots or the gallery.
+  const tokens = [...r.players.values()].map((p) => p.token).concat(ta, tb, token(c));
+  for (const s of [a, b, c, f, b2, a2]) {
+    const seen = JSON.stringify(s.out.filter((m) => m.t !== 'welcome'));
+    for (const t of tokens) expect(seen).not.toContain(t);
+  }
+});
+
+test('MVP vote is ignored before the game ends', () => {
+  const ctx = setup(2);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const id = ctx.room.gallery[0].id;
+  const voter = ctx.ss.find((s) => s.id !== ctx.room.gallery[0].drawer.id);
+  voter.do('vote', { id });
+  expect(ctx.room.votes.size).toBe(0);
+});
+
+test('wins tonight: every top scorer gets a win, ties share, tally survives rematches and reconnects', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  const r = ctx.room;
+  const finish = (scores) => {
+    a.do('start');
+    [...r.players.values()].forEach((p, i) => { p.score = scores[i]; });
+    r.endGame();
+  };
+  finish([300, 100, 300]);
+  expect(a.state().wins).toEqual([{ name: 'A', n: 1 }, { name: 'C', n: 1 }]);
+  a.do('again');
+  finish([0, 500, 400]);
+  a.do('again');
+  finish([0, 0, 0]); // nobody scored: no winner
+  expect(r.wins.size).toBe(3);
+  const tokenC = c.out.find((m) => m.t === 'welcome').token;
+  c.drop();
+  const c2 = sock('C2');
+  c2.do('join', { room: ctx.code, name: 'Cee', token: tokenC });
+  expect(c2.state().wins).toEqual([{ name: 'A', n: 1 }, { name: 'B', n: 1 }, { name: 'Cee', n: 1 }]);
+  expect(JSON.stringify(c2.state())).not.toContain(tokenC);
 });
