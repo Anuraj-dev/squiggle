@@ -258,8 +258,8 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .deck-chip:has(input:disabled) { cursor: default; }
 .deck-chip:has(input:disabled:not(:checked)) { opacity: 0.6; }
 .deck-chip:not(:has(input:disabled)):active { transform: scale(0.96); }
-.choice .badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem; }
-.deck-badge, .deck-pill { font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 999px; border: 2px solid var(--ink); background: var(--paper-2); white-space: nowrap; }
+.choice .badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem; max-width: 100%; }
+.deck-badge, .deck-pill { font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 999px; border: 2px solid var(--ink); background: var(--paper-2); max-width: 100%; overflow-wrap: anywhere; text-align: center; }
 .word-area .deck-row { flex-basis: 100%; display: flex; justify-content: center; margin-bottom: -0.25rem; }
 .settings-pill { position: absolute; top: 10px; left: 10px; z-index: 3; }
 .settings-pill, .overlay .btn { font-size: 0.95rem; }
@@ -453,7 +453,8 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
   .tgroup.pal { flex: 1 1 100%; }
   .overlay { padding: 0.6rem; }
   .lobby { padding: 0.8rem; gap: 0.6rem; }
-  .choice { min-width: 0; flex: 1; padding: 0.6rem; }
+  /* Two cards a row on a phone (five choices wrap to three rows) instead of five slivers. */
+  .choice { min-width: 0; flex: 1 1 7.5rem; max-width: 100%; padding: 0.6rem; }
   .choice .w { font-size: 1.05rem; }
   .ov-inner { gap: 0.6rem; }
   .big-av { width: 60px; height: 60px; font-size: 2rem; }
@@ -528,7 +529,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 /* ---------- reveal recap, finale, MVP, replays (see buildReveal, finaleSplash, renderEnd, openLightbox) ---------- */
 .room-thought { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 0.1rem 0.45rem; width: 100%; font-size: 0.9rem; }
 .room-thought small { font-weight: 700; color: var(--ink-2); }
-.room-thought .wrong { font-family: var(--hand); font-size: 1.35rem; font-weight: 700; line-height: 1; transform: rotate(-1.5deg); }
+.room-thought .wrong { font-family: var(--hand); font-size: 1.35rem; font-weight: 700; line-height: 1; transform: rotate(-1.5deg); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .room-thought .wrong:nth-of-type(even) { transform: rotate(1.5deg); }
 .room-thought .wrong + .wrong::before { content: '·'; margin-right: 0.45rem; font-family: var(--font); color: var(--ink-3); }
 
