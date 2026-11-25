@@ -522,10 +522,10 @@ test('decks: host picks decks, cards come from different decks with badges, unkn
     expect(DECK_BY_ID.get(c.deck.id).easy).toContain(c.word);
     expect(c.deck).toEqual({ id: c.deck.id, name: DECK_BY_ID.get(c.deck.id).name, icon: DECK_BY_ID.get(c.deck.id).icon });
   }
-  // The chosen word's deck is a public clue during drawing; the word is not.
+  // Guessers get neither the chosen word nor its deck.
   drawer.act('choose', { i: 0 });
   const g = ctx.ss.find((s) => s !== drawer).state();
-  expect(g.deck).toEqual(choices[0].deck);
+  expect(g.deck).toBeUndefined();
   expect(g.word).toBeNull();
   ctx.room.toLobby();
   ctx.ss[0].do('settings', { settings: { decks: [] } });

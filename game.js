@@ -266,7 +266,6 @@ export class Room {
       hint: this.word && drawing && !hideLength ? this.hint() : null,
       word: this.word && this.canSeeWord(p) ? this.word : null,
       diff: this.word ? this.diff : null,
-      deck: this.word ? this.deck : null,
       deckCatalog: this.state === 'lobby' ? DECK_CATALOG : null,
       choices: this.state === 'choosing' && p.id === this.drawerId ? this.choices : null,
       rerolled: this.rerolled,

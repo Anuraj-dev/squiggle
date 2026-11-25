@@ -210,7 +210,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
   border-radius: 999px; background: var(--mint-bg); white-space: nowrap;
 }
 .stake.medium { background: var(--warn-bg); }
-.stake.hard { background: var(--tomato); color: #fff; animation: throb 1.4s ease-in-out infinite; }
+.stake.hard { background: var(--tomato); color: #fff; }
 .budget { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; font-weight: 700; font-variant-numeric: tabular-nums; }
 .budget meter { width: 90px; height: 16px; accent-color: #6840aa; }
 .choice-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
@@ -259,8 +259,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .deck-chip:has(input:disabled:not(:checked)) { opacity: 0.6; }
 .deck-chip:not(:has(input:disabled)):active { transform: scale(0.96); }
 .choice .badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem; max-width: 100%; }
-.deck-badge, .deck-pill { font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 999px; border: 2px solid var(--ink); background: var(--paper-2); max-width: 100%; overflow-wrap: anywhere; text-align: center; }
-.word-area .deck-row { flex-basis: 100%; display: flex; justify-content: center; margin-bottom: -0.25rem; }
+.deck-badge { font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 999px; border: 2px solid var(--ink); background: var(--paper-2); max-width: 100%; overflow-wrap: anywhere; text-align: center; }
 .settings-pill { position: absolute; top: 10px; left: 10px; z-index: 3; }
 .settings-pill, .overlay .btn { font-size: 0.95rem; }
 .react-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; }
@@ -536,7 +535,6 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .finale-chip {
   font-weight: 800; font-size: 0.85rem; letter-spacing: 0.04em; padding: 0.25rem 0.6rem; border: 2px solid var(--ink); border-radius: 999px;
   background: linear-gradient(100deg, var(--sun), var(--tomato)); color: var(--ink); white-space: nowrap; box-shadow: var(--shadow-sm);
-  animation: throb 1.4s ease-in-out infinite;
 }
 .finale-ribbon {
   position: absolute; top: 12%; left: 50%; z-index: 8; pointer-events: none; display: flex; flex-direction: column; align-items: center;

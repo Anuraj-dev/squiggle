@@ -721,13 +721,11 @@ function renderWord(isDrawer, drawer) {
   if (S.state === 'end') return fill(area, h('span', { class: 'big', text: '🏁 Game over' }));
   if (S.state === 'choosing') return fill(area, h('span', { class: 'big', text: isDrawer ? 'Your turn ✏️' : `${drawer?.name || '…'} is choosing` }));
   if (S.state === 'reveal') return fill(area, h('span', { class: 'lbl', text: 'the word was' }), h('span', { class: 'big', text: S.reveal?.word || '' }));
-  // The chosen word's deck is a public clue for everyone while drawing.
-  const deck = S.state === 'drawing' && S.deck ? h('span', { class: 'deck-row' }, h('span', { class: 'deck-pill', title: 'Word deck', text: `${S.deck.icon} ${S.deck.name}` })) : null;
   if (S.word) {
-    return fill(area, deck, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
+    return fill(area, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
   }
   const hint = S.hint || '';
-  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, deck, h('span', { class: 'big', text: '?' }));
+  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, h('span', { class: 'big', text: '?' }));
   const slots = [...hint].map((ch) => {
     if (ch === ' ') return h('span', { class: 'slot gap' });
     if (ch === '_') return h('span', { class: 'slot' }, ' ');
@@ -735,7 +733,7 @@ function renderWord(isDrawer, drawer) {
     return h('span', { class: 'slot lit', text: ch });
   });
   const counts = hint.split(' ').map((w) => w.replace(/[^a-z0-9_]/gi, '').length).join(' ');
-  fill(area, deck, h('span', { class: 'slots', role: 'img', 'aria-label': `Hint: ${hint.replace(/_/g, ' blank ')}` }, slots), h('span', { class: 'counts', text: counts }));
+  fill(area, h('span', { class: 'slots', role: 'img', 'aria-label': `Hint: ${hint.replace(/_/g, ' blank ')}` }, slots), h('span', { class: 'counts', text: counts }));
 }
 
 let overlayKey = '', lobbyMinimized = false;
