@@ -24,7 +24,7 @@ const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
 export const galleryCols = (n) => (n <= 4 ? 2 : n <= 9 ? 3 : n <= 20 ? 4 : 5);
 
-export function shareMetrics(playerCount, awardCount, drawingCount) {
+export function shareMetrics(playerCount, awardCount, drawingCount, mvpCount = 0) {
   const lbCols = playerCount > 5 ? 2 : 1;
   const lbW = lbCols === 2 ? CARD_W - PAD * 2 : 760;
   const rowW = lbCols === 2 ? (lbW - GAP) / 2 : lbW;
@@ -37,6 +37,14 @@ export function shareMetrics(playerCount, awardCount, drawingCount) {
   const aw = { y: y + SECTION_GAP, w: awardW, h: awardRows ? awardRows * AWARD_H + (awardRows - 1) * AWARD_GAP : 0 };
   if (awardRows) y = aw.y + aw.h;
 
+  // Gallery MVP: the most voted drawing(s), bigger than gallery tiles, centred.
+  const mvpCols = Math.min(3, mvpCount);
+  const mvpW = mvpCols ? Math.min(560, (CARD_W - PAD * 2 - GAP * (mvpCols - 1)) / mvpCols) : 0;
+  const mvpTileH = Math.round((mvpW * 3) / 4);
+  const mvpRows = Math.ceil(mvpCount / 3);
+  const mvp = { cols: mvpCols, tileW: mvpW, tileH: mvpTileH, headY: y + SECTION_GAP, y: y + SECTION_GAP + SECTION_HEAD_H, rowH: mvpTileH + CAP_H };
+  if (mvpRows) y = mvp.y + mvpRows * mvp.rowH + (mvpRows - 1) * GAP;
+
   const cols = galleryCols(drawingCount);
   const tileW = (CARD_W - PAD * 2 - GAP * (cols - 1)) / cols;
   const tileH = Math.round((tileW * 3) / 4);
@@ -48,7 +56,7 @@ export function shareMetrics(playerCount, awardCount, drawingCount) {
   const height = y + FOOT_H + PAD / 2;
   // Downscale (never upscale) when a long game would blow past canvas limits.
   const scale = Math.min(1, Math.sqrt(MAX_PIXELS / (CARD_W * height)), MAX_SIDE / height);
-  return { width: CARD_W, height, scale, lb, aw, gal };
+  return { width: CARD_W, height, scale, lb, aw, mvp, gal };
 }
 
 function rrect(c, x, y, w, h, r) {
@@ -89,11 +97,32 @@ function avatar(c, p, cx, cy, r) {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-// data: { title, ranking, awards, drawings: [{ word, by, strokes }] }
+// A captioned drawing tile laid out by a grid (`g`: cols, tileW, tileH, rowH,
+// y) at index i of n; a short last row is centred instead of leaving a hole.
+function tile(c, d, g, i, n, fill = CARD) {
+  const { cols, tileW, tileH, rowH } = g, row = Math.floor(i / cols);
+  const inRow = Math.min(cols, n - row * cols);
+  const x = (CARD_W - (inRow * tileW + (inRow - 1) * GAP)) / 2 + (i % cols) * (tileW + GAP);
+  const y = g.y + row * (rowH + GAP);
+  box(c, x, y, tileW, rowH, 16, fill, 4);
+  c.save();
+  // Round only the top corners: the bottom edge meets the caption square.
+  c.beginPath(); c.moveTo(x, y + tileH); c.lineTo(x, y + 16); c.arcTo(x, y, x + 16, y, 16);
+  c.lineTo(x + tileW - 16, y); c.arcTo(x + tileW, y, x + tileW, y + 16, 16); c.lineTo(x + tileW, y + tileH); c.closePath(); c.clip();
+  c.translate(x, y);
+  paintThumb(c, tileW, tileH, d.strokes || [], d.endMs != null ? { gameMs: d.endMs } : {});
+  c.restore();
+  c.fillStyle = INK; c.fillRect(x, y + tileH, tileW, 4);
+  c.lineWidth = 4; c.strokeStyle = INK; rrect(c, x, y, tileW, rowH, 16); c.stroke();
+  text(c, d.word, x + 18, y + tileH + 32, { font: `800 30px ${FONT}`, maxW: tileW - 36 });
+  text(c, d.by, x + 18, y + tileH + 64, { font: `600 21px ${FONT}`, color: INK2, maxW: tileW - 36 });
+}
+
+// data: { title, ranking, awards, drawings: [{ word, by, strokes }], mvp?: same shape plus votes }
 // makeCanvas is injectable for tests; defaults to a DOM canvas.
-export async function renderShareCard({ title, ranking, awards, drawings }, makeCanvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h })) {
+export async function renderShareCard({ title, ranking, awards, drawings, mvp = [] }, makeCanvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h })) {
   try { await Promise.all([document.fonts.load(`800 40px ${FONT}`), document.fonts.load(`700 40px ${HAND}`)]); } catch {}
-  const m = shareMetrics(ranking.length, awards.length, drawings.length);
+  const m = shareMetrics(ranking.length, awards.length, drawings.length, mvp.length);
   const cv = makeCanvas(Math.round(m.width * m.scale), Math.round(m.height * m.scale));
   const c = cv.getContext('2d');
   c.scale(m.scale, m.scale);
@@ -128,28 +157,20 @@ export async function renderShareCard({ title, ranking, awards, drawings }, make
     text(c, a.detail || '', x + 100, y + 70, { font: `600 21px ${FONT}`, color: INK2, maxW: m.aw.w - 120 });
   });
 
+  // gallery MVP
+  if (mvp.length) {
+    const votes = mvp[0].votes;
+    const head = `🏆 Gallery MVP${mvp.length > 1 ? 's' : ''}${votes ? ` · ${votes} vote${votes > 1 ? 's' : ''}${mvp.length > 1 ? ' each' : ''}` : ''}`;
+    text(c, head, PAD, m.mvp.headY + SECTION_HEAD_H / 2, { font: `800 38px ${FONT}` });
+    for (let i = 0; i < mvp.length; i++) tile(c, mvp[i], m.mvp, i, mvp.length, '#fff2c7');
+    await tick();
+  }
+
   // gallery
   if (drawings.length) {
     text(c, '🖼️ Tonight’s gallery', PAD, m.gal.headY + SECTION_HEAD_H / 2, { font: `800 38px ${FONT}` });
-    const { cols, tileW, tileH, rowH } = m.gal;
     for (let i = 0; i < drawings.length; i++) {
-      const d = drawings[i], row = Math.floor(i / cols);
-      // Centre a short last row instead of leaving a hole on the right.
-      const inRow = Math.min(cols, drawings.length - row * cols);
-      const x = PAD + (cols - inRow) * (tileW + GAP) / 2 + (i % cols) * (tileW + GAP);
-      const y = m.gal.y + row * (rowH + GAP);
-      box(c, x, y, tileW, rowH, 16, CARD, 4);
-      c.save();
-      // Round only the top corners: the bottom edge meets the caption square.
-      c.beginPath(); c.moveTo(x, y + tileH); c.lineTo(x, y + 16); c.arcTo(x, y, x + 16, y, 16);
-      c.lineTo(x + tileW - 16, y); c.arcTo(x + tileW, y, x + tileW, y + 16, 16); c.lineTo(x + tileW, y + tileH); c.closePath(); c.clip();
-      c.translate(x, y);
-      paintThumb(c, tileW, tileH, d.strokes || [], d.endMs != null ? { gameMs: d.endMs } : {});
-      c.restore();
-      c.fillStyle = INK; c.fillRect(x, y + tileH, tileW, 4);
-      c.lineWidth = 4; c.strokeStyle = INK; rrect(c, x, y, tileW, rowH, 16); c.stroke();
-      text(c, d.word, x + 18, y + tileH + 32, { font: `800 30px ${FONT}`, maxW: tileW - 36 });
-      text(c, d.by, x + 18, y + tileH + 64, { font: `600 21px ${FONT}`, color: INK2, maxW: tileW - 36 });
+      tile(c, drawings[i], m.gal, i, drawings.length);
       if (i % 4 === 3) await tick();
     }
   }

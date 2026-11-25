@@ -524,3 +524,82 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .music-panel .sfx-toggle + .sfx-toggle { border-top: 0; padding-top: 0; }
 .music-panel .sfx-toggle { border-top: 2px dashed var(--line-soft, #d8d0c4); padding-top: 0.55rem; }
 .music-panel .sfx-toggle input { width: 18px; height: 18px; accent-color: var(--grape); }
+
+/* ---------- reveal recap, finale, MVP, replays (see buildReveal, finaleSplash, renderEnd, openLightbox) ---------- */
+.room-thought { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 0.1rem 0.45rem; width: 100%; font-size: 0.9rem; }
+.room-thought small { font-weight: 700; color: var(--ink-2); }
+.room-thought .wrong { font-family: var(--hand); font-size: 1.35rem; font-weight: 700; line-height: 1; transform: rotate(-1.5deg); }
+.room-thought .wrong:nth-of-type(even) { transform: rotate(1.5deg); }
+.room-thought .wrong + .wrong::before { content: '·'; margin-right: 0.45rem; font-family: var(--font); color: var(--ink-3); }
+
+.finale-chip {
+  font-weight: 800; font-size: 0.85rem; letter-spacing: 0.04em; padding: 0.25rem 0.6rem; border: 2px solid var(--ink); border-radius: 999px;
+  background: linear-gradient(100deg, var(--sun), var(--tomato)); color: var(--ink); white-space: nowrap; box-shadow: var(--shadow-sm);
+  animation: throb 1.4s ease-in-out infinite;
+}
+.finale-ribbon {
+  position: absolute; top: 12%; left: 50%; z-index: 8; pointer-events: none; display: flex; flex-direction: column; align-items: center;
+  padding: 0.55rem 1.6rem 0.45rem; background: var(--sun); border: var(--line); border-radius: 12px; box-shadow: 5px 5px 0 var(--ink);
+  transform: translateX(-50%) rotate(-2deg); animation: finaleIn 3.2s cubic-bezier(0.2, 1.5, 0.4, 1) forwards; white-space: nowrap;
+}
+.finale-ribbon b { font-size: clamp(1.4rem, 4vw, 2.4rem); letter-spacing: -0.02em; color: var(--tomato); -webkit-text-stroke: 1.2px var(--ink); }
+.finale-ribbon small { font-family: var(--hand); font-size: 1.3rem; font-weight: 700; }
+@keyframes finaleIn {
+  0% { transform: translateX(-50%) translateY(-30px) rotate(-8deg) scale(0.4); opacity: 0; }
+  14% { transform: translateX(-50%) rotate(-2deg) scale(1); opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateX(-50%) rotate(-2deg) scale(1.04); opacity: 0; }
+}
+
+.wins-line { margin: 0; font-weight: 800; padding: 0.35rem 0.8rem; background: var(--warn-bg); border: 2px solid var(--ink); border-radius: 10px; transform: rotate(-0.4deg); overflow-wrap: anywhere; }
+.wins-line[hidden] { display: none; }
+
+.vote-hint { margin: -0.8rem 0 0; font-size: 0.85rem; }
+.gal .cap .vote {
+  margin-left: auto; border: 2px solid var(--ink); border-radius: 8px; background: var(--card); padding: 0.15rem 0.45rem; font-size: 0.85rem;
+  font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer;
+}
+.gal .cap .vote + .dl { margin-left: 0; }
+.gal .cap .vote[aria-pressed="true"] { background: var(--sun); box-shadow: var(--shadow-sm); }
+.gal .cap .vote:disabled { opacity: 0.45; cursor: not-allowed; }
+.gal.is-mvp { box-shadow: 0 0 0 4px var(--sun), var(--shadow); }
+.mvp-feature { display: flex; flex-direction: column; gap: 0.7rem; }
+.mvp-empty { margin: 0; text-align: center; font-weight: 700; color: var(--ink-2); padding: 0.6rem; border: 2px dashed var(--ink-3); border-radius: 12px; }
+.mvp-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; }
+.mvp-card {
+  width: min(300px, 100%); display: flex; flex-direction: column; gap: 0.15rem; padding: 0 0 0.5rem; text-align: left; font: inherit; color: inherit;
+  background: var(--warn-bg); border: var(--line); border-radius: 14px; overflow: hidden; box-shadow: 5px 5px 0 var(--ink); cursor: zoom-in;
+  transform: rotate(-1deg); animation: pop 0.5s;
+}
+.mvp-card:nth-child(even) { transform: rotate(1deg); }
+.mvp-card canvas { width: 100%; aspect-ratio: 4 / 3; display: block; background: #fff; border-bottom: 2px solid var(--ink); margin-bottom: 0.3rem; }
+.mvp-card .w { font-weight: 800; font-size: 1.1rem; padding: 0 0.7rem; }
+.mvp-card .by { font-size: 0.85rem; color: var(--ink-2); padding: 0 0.7rem; }
+.mvp-card:focus-visible { outline: 3px solid var(--grape); outline-offset: 3px; }
+
+.rec { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+.rec-label { font-weight: 800; }
+.rec progress { width: 140px; height: 14px; accent-color: var(--tomato); }
+.rec-pct { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 3ch; }
+.end-actions .rec .btn { font-size: 1.15rem; padding: 0.8rem 1.2rem; font-weight: 800; }
+.end-actions .rec .btn.ghost, .rp-actions .rec .btn.ghost { min-width: 0; }
+.end-actions .rec-label, .end-actions .rec-pct { color: var(--ink); }
+
+.lightbox.replay canvas { width: min(1000px, 96vw, calc((100dvh - 15rem) * 4 / 3)); }
+.rp-head, .rp-controls, .rp-actions {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: center; width: min(1000px, 96vw);
+}
+.rp-head { color: #fffdf8; gap: 0.2rem 0.7rem; }
+.rp-head .w { font-size: 1.4rem; font-weight: 800; }
+.rp-head .by { opacity: 0.85; }
+.rp-controls { background: var(--card); border: var(--line); border-radius: 12px; padding: 0.45rem 0.6rem; box-shadow: var(--shadow-sm); }
+.rp-play { min-width: 7.5rem; }
+.rp-speed { display: flex; border: 2px solid var(--ink); border-radius: 10px; overflow: hidden; }
+.rp-speed button { border: 0; border-left: 2px solid var(--ink); background: var(--card); font: inherit; font-weight: 800; padding: 0.35rem 0.6rem; cursor: pointer; font-variant-numeric: tabular-nums; }
+.rp-speed button:first-child { border-left: 0; }
+.rp-speed button[aria-pressed="true"] { background: var(--sun); }
+.rp-speed button:focus-visible { outline: 3px solid var(--grape); outline-offset: -3px; }
+.rp-scrub { flex: 1 1 160px; min-width: 120px; accent-color: var(--tomato); }
+.rp-time { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.85rem; min-width: 7.5ch; text-align: right; }
+.rp-actions .rec-label, .rp-actions .rec-pct { color: #fffdf8; }
+.rp-actions form { margin: 0; }

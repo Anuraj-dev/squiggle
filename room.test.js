@@ -1,12 +1,13 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
-import { clock, onMessage, onClose, rooms, setWordHistory } from './game.js';
+import { clock, onMessage, onClose, rooms, setWordHistory, recapGuesses } from './game.js';
 import { WordHistory } from './history.js';
 import { DECK_BY_ID, DECK_CATALOG } from './decks.js';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NEW_WORDS } from './words-new.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
@@ -1205,4 +1206,178 @@ test('gravity ink records turn endMs on reveal and gallery for deterministic ren
   c.drawer.act('skip');
   expect(c.room.reveal.endMs).toBe(12345);
   expect(c.room.gallery.at(-1).endMs).toBe(12345);
+});
+
+// Draws one stroke and skips, so the turn lands in the gallery; then leaves the reveal.
+function drawAndSkip(ctx) {
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  drawer.act('choose', { i: 0 });
+  drawer.act('stroke', { s: pen(`s${ctx.room.turnSeq}`, [5, 5, 50, 50]) });
+  drawer.act('skip');
+  expect(ctx.room.state).toBe('reveal');
+  advance(REVEAL_MS);
+  return drawer;
+}
+
+test('recap: most repeated wrong guess first, then longest; one per player; no close or answer-mentioning guesses', () => {
+  const g = (id, text, close = false) => ({ id, text, close });
+  const list = [
+    g('a', 'toilet'), g('b', 'Toilet!'), g('c', 'sad potato'), g('a', 'a very long guess indeed'),
+    g('d', 'rabbt', true), g('d', 'big rabbit ears'), g('c', 'toilet'), g('e', 'hat'),
+  ];
+  expect(recapGuesses(list, 'rabbit')).toEqual([
+    { text: 'toilet', by: 'b', n: 3 },
+    { text: 'a very long guess indeed', by: 'a', n: 1 },
+    { text: 'sad potato', by: 'c', n: 1 },
+  ]);
+  // A player whose guesses all went to earlier picks is skipped, not repeated.
+  expect(recapGuesses([g('a', 'one'), g('a', 'two')], 'rabbit')).toEqual([{ text: 'one', by: 'a', n: 1 }]);
+  expect(recapGuesses([g('a', 'rabbt', true)], 'rabbit')).toEqual([]);
+});
+
+test('reveal carries the wrong-guess recap; close guesses stay out', () => {
+  const ctx = setup(3);
+  const { drawer, guessers: [b, c] } = startDrawing(ctx);
+  b.act('chat', { text: 'sad potato' });
+  c.act('chat', { text: 'sad potato' });
+  c.act('chat', { text: 'toilet' });
+  b.act('chat', { text: ctx.room.word.slice(0, -1) }); // a near typo, "sooo close"
+  drawer.act('skip');
+  expect(ctx.room.reveal.recap.map((r) => r.text)).toEqual(['sad potato', 'toilet']);
+  expect(new Set(ctx.room.reveal.recap.map((r) => r.by)).size).toBe(2);
+  expect(b.state().reveal.recap.length).toBe(2);
+  advance(REVEAL_MS);
+  expect(ctx.room.wrongGuesses).toEqual([]);
+});
+
+test('finale: only the last drawer of the last round scores 2× for guessers and drawer', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  expect(ctx.room.finale).toBe(false);
+  drawAndSkip(ctx);
+  expect(ctx.room.state).toBe('choosing');
+  expect(ctx.room.finale).toBe(true);
+  expect(ctx.ss[0].state().finale).toBe(true);
+  expect(ctx.ss[0].chats().some((m) => /FINALE/.test(m.text))).toBe(true);
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const [b, c] = ctx.ss.filter((s) => s !== drawer);
+  drawer.act('choose', { i: 0 });
+  const r = ctx.room;
+  const modes = () => [r.chaos, r.guesserChaos].filter(Boolean);
+  const before = r.players.get(b.id).score;
+  advance(10000);
+  b.act('chat', { text: r.word });
+  const pts = r.players.get(b.id).score - before;
+  const base = guesserPts({ elapsed: 10000, scoreLen: r.scoreLen, diff: r.diff, chaos: modes(), streak: 1 });
+  expect(pts).toBe(base * 2);
+  expect(r.players.get(drawer.id).score).toBe(drawerPts({ solved: 1, eligible: 2, diff: r.diff, chaos: modes() }) * 2);
+  c.act('chat', { text: r.word });
+  expect(r.reveal.finale).toBe(true);
+  expect(r.reveal.deltas.find((d) => d.drawer).pts).toBe(drawerPts({ solved: 2, eligible: 2, diff: r.diff, chaos: modes(), all: true }) * 2);
+  advance(REVEAL_MS);
+  expect(r.state).toBe('end');
+  expect(r.finale).toBe(false);
+});
+
+test('finale: when the planned last drawer leaves, the actual last turn becomes the finale and earlier points double', () => {
+  const ctx = setup(4);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  expect(r.finale).toBe(false);
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const b = ctx.ss.find((s) => s !== drawer && s !== last);
+  const before = r.players.get(b.id).score;
+  advance(5000);
+  b.act('chat', { text: r.word });
+  const plain = r.players.get(b.id).score - before;
+  const drawerPlain = r.players.get(drawer.id).score;
+  last.do('leave');
+  expect(r.finale).toBe(true);
+  expect(r.state).toBe('drawing');
+  expect(r.players.get(b.id).score - before).toBe(plain * 2);
+  expect(r.guessed.get(b.id).pts).toBe(plain * 2);
+  expect(r.players.get(drawer.id).score).toBeGreaterThan(drawerPlain);
+  expect(b.state().finale).toBe(true);
+});
+
+test('finale: a last drawer who drops also makes the current turn the finale', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  expect(r.finale).toBe(false);
+  ctx.ss.find((s) => s.id === r.queue[0]).drop();
+  expect(r.finale).toBe(true);
+});
+
+test('MVP vote: end state only, not your own, one changeable vote each, ties share, no points', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  a.do('start');
+  const byDrawer = {};
+  for (let i = 0; i < 3; i++) {
+    const d = drawAndSkip(ctx);
+    byDrawer[d.id] = ctx.room.gallery.at(-1).id;
+  }
+  const r = ctx.room;
+  expect(r.state).toBe('end');
+  expect(b.out.findLast((m) => m.t === 'gallery').gallery.map((g) => g.id)).toEqual([1, 2, 3]);
+  const scores = () => [...r.players.values()].map((p) => p.score);
+  const before = scores();
+  a.do('vote', { id: byDrawer[a.id] });
+  a.do('vote', { id: 999 });
+  expect(a.state().mvp).toEqual({ tally: {}, winners: [], mine: null });
+  a.do('vote', { id: byDrawer[b.id] });
+  b.do('vote', { id: byDrawer[c.id] });
+  expect(c.state().mvp.winners.sort()).toEqual([byDrawer[b.id], byDrawer[c.id]].sort());
+  c.do('vote', { id: byDrawer[b.id] });
+  expect(c.state().mvp).toEqual({ tally: { [byDrawer[b.id]]: 2, [byDrawer[c.id]]: 1 }, winners: [byDrawer[b.id]], mine: byDrawer[b.id] });
+  a.do('vote', { id: byDrawer[c.id] }); // changing a vote moves it
+  expect(a.state().mvp.tally).toEqual({ [byDrawer[b.id]]: 1, [byDrawer[c.id]]: 2 });
+  a.do('vote', { id: null });
+  expect(a.state().mvp.mine).toBe(null);
+  expect(scores()).toEqual(before);
+  a.do('again');
+  expect(r.votes.size).toBe(0);
+  a.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(0);
+});
+
+test('MVP vote is ignored before the game ends', () => {
+  const ctx = setup(2);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const id = ctx.room.gallery[0].id;
+  const voter = ctx.ss.find((s) => s.id !== ctx.room.gallery[0].drawer.id);
+  voter.do('vote', { id });
+  expect(ctx.room.votes.size).toBe(0);
+});
+
+test('wins tonight: every top scorer gets a win, ties share, tally survives rematches and reconnects', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  const r = ctx.room;
+  const finish = (scores) => {
+    a.do('start');
+    [...r.players.values()].forEach((p, i) => { p.score = scores[i]; });
+    r.endGame();
+  };
+  finish([300, 100, 300]);
+  expect(a.state().wins).toEqual([{ name: 'A', n: 1 }, { name: 'C', n: 1 }]);
+  a.do('again');
+  finish([0, 500, 400]);
+  a.do('again');
+  finish([0, 0, 0]); // nobody scored: no winner
+  expect(r.wins.size).toBe(3);
+  const tokenC = c.out.find((m) => m.t === 'welcome').token;
+  c.drop();
+  const c2 = sock('C2');
+  c2.do('join', { room: ctx.code, name: 'Cee', token: tokenC });
+  expect(c2.state().wins).toEqual([{ name: 'A', n: 1 }, { name: 'B', n: 1 }, { name: 'Cee', n: 1 }]);
+  expect(JSON.stringify(c2.state())).not.toContain(tokenC);
 });

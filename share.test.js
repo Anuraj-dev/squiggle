@@ -29,3 +29,17 @@ test('a very long game is scaled down to stay inside canvas limits', () => {
   expect(m.width * m.scale * m.height * m.scale).toBeLessThanOrEqual(16e6 + 1);
   expect(m.height * m.scale).toBeLessThanOrEqual(16000);
 });
+
+test('gallery MVPs get their own section between awards and the gallery', () => {
+  const without = shareMetrics(4, 3, 6);
+  const one = shareMetrics(4, 3, 6, 1);
+  expect(without.mvp.cols).toBe(0);
+  expect(without.gal.headY).toBe(one.mvp.headY);
+  expect(one.mvp.headY).toBeGreaterThan(one.aw.y + one.aw.h);
+  expect(one.gal.headY).toBeGreaterThan(one.mvp.y + one.mvp.rowH);
+  expect(one.height).toBeGreaterThan(without.height);
+  const tie = shareMetrics(4, 3, 6, 4); // ties wrap three per row
+  expect(tie.mvp.cols).toBe(3);
+  expect(tie.gal.headY).toBeGreaterThan(tie.mvp.y + 2 * tie.mvp.rowH);
+  expect(tie.mvp.tileW).toBeLessThanOrEqual(560);
+});

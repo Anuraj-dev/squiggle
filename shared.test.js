@@ -349,3 +349,12 @@ test('macroView zooms 2.5x around recent ink, eases to 1x, and never shows outsi
   expect(macroView({ x: W, y: H }, 1)).toEqual({ zoom: 2.5, tx: -0.75, ty: -0.75 });
   expect(macroView({ x: 100, y: 100 }, 0)).toEqual({ zoom: 1, tx: 0, ty: 0 });
 });
+
+test('finale doubles the whole guesser and drawer award, chaos and streak included', () => {
+  const chaos = [{ id: 'mirror', seed: 1 }];
+  const g = { elapsed: 12000, scoreLen: 80000, diff: 'hard', chaos, streak: 3 };
+  expect(guesserPts({ ...g, finale: true })).toBe(guesserPts(g) * 2);
+  const d = { solved: 2, eligible: 3, diff: 'medium', chaos, all: false };
+  expect(drawerPts({ ...d, finale: true })).toBe(drawerPts(d) * 2);
+  expect(drawerPts({ ...d, eligible: 0, finale: true })).toBe(0);
+});

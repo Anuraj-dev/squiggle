@@ -4,6 +4,7 @@ import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, pod
   recentInkCenter, macroView, scoreMult, DIFF_MULT } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { renderShareCard } from './share.js';
+import { ReplayPlayer, SPEEDS, recordingSupported, recordSegments, drawingSegments, reelSegments, deliverClip, clipName } from './replay.js';
 import { createMusic } from './music.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -651,6 +652,7 @@ function render(prev) {
   if (changed && S.state === 'end') confetti(120);
   if (changed && S.state === 'reveal' && S.reveal?.reason === 'all') { confetti(180); celebrate(); }
   chaosSplash();
+  finaleSplash();
   if (prev?.state === 'end' && S.state !== 'end') gallery = [];
 
   const sorted = S.state === 'lobby' ? S.players : [...S.players].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -677,7 +679,7 @@ function render(prev) {
         kickBtn));
   }));
 
-  $('#roundLbl').textContent = inGame() ? `Round ${S.round} of ${S.settings.rounds}` : '';
+  $('#roundLbl').textContent = inGame() ? `Round ${S.round} of ${S.settings.rounds}${S.finale ? ' · 🔥 Finale' : ''}` : '';
   renderWord(isDrawer, drawer);
   $('#timer').hidden = !inGame();
   $('#timer').classList.toggle('paused', !!S.paused);
@@ -793,7 +795,7 @@ function renderChallenge() {
     return;
   }
   const [artist, guesser] = [S.chaos, S.guesserChaos];
-  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}`;
+  const key = `${S.seq}:${st}:${artist?.id}:${guesser?.id}:${S.diff}:${S.finale}`;
   if (strip.dataset.mode !== key) {
     strip.dataset.mode = key;
     strip.className = `challenge${artist || guesser ? ' chaotic' : ''}`;
@@ -803,6 +805,7 @@ function renderChallenge() {
       h('div', { class: 'stakes' },
         h('div', { class: 'budget', hidden: true },
           h('span', { id: 'budgetText' }), h('meter', { id: 'inkMeter', min: 0, max: INK_BUDGET, 'aria-label': 'Ink remaining' })),
+        S.finale ? h('span', { class: 'finale-chip', title: 'Last turn of the game: every point counts double', text: '🔥 FINALE · 2×' }) : null,
         S.diff ? h('span', { class: `stake ${S.diff}`, title: 'Points multiplier this turn', text: `${S.diff} ${multText(scoreMult(S.diff, turnModes()))}` }) : null));
   }
   const label = $('#budgetText');
@@ -848,6 +851,18 @@ function chaosSplash() {
   play('chaos');
 }
 
+// The last turn of the game scores double. A ribbon across the top of the board
+// (not a centred card) so it never covers the chaos splash or the drawing.
+let finaleSeq = -1;
+function finaleSplash() {
+  if (!S.finale || !inGame() || S.state === 'reveal' || finaleSeq === S.seq) return;
+  finaleSeq = S.seq;
+  $('#boardWrap .finale-ribbon')?.remove();
+  const el = h('div', { class: 'finale-ribbon', role: 'status' }, h('b', { text: '🔥 FINALE · 2× points' }), h('small', { text: 'Last turn of the game!' }));
+  $('#boardWrap').append(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
 function celebrate() {
   const wrap = $('#boardWrap');
   wrap.classList.remove('party'); void wrap.offsetWidth; wrap.classList.add('party');
@@ -885,7 +900,10 @@ function buildReveal() {
     h('div', { class: 'reveal-head' },
       h('span', { class: 'reveal-reason', text: reason }),
       h('span', { class: 'reveal-word', text: r.word || '' }),
-      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null),
+      r.diff ? h('span', { class: `stake ${r.diff}`, text: `${r.diff} ${multText(r.mult || 1)}` }) : null,
+      r.finale ? h('span', { class: 'finale-chip', title: 'Finale: every point counted double', text: '🔥 2×' }) : null),
+    r.recap?.length ? h('div', { class: 'room-thought' }, h('small', { text: 'The room thought:' }),
+      r.recap.map((x) => h('span', { class: 'wrong', title: `${playerById(x.by)?.name || 'Someone'}${x.n > 1 ? ` and ${x.n - 1} more` : ''}`, text: `“${x.text}”` }))) : null,
     h('div', { class: 'reveal-scores' },
       scored.length ? scored.map((d) => {
         const p = playerById(d.id) || { name: d.name };
@@ -935,6 +953,7 @@ function buildLobby() {
     h('div', { class: 'lobby-head' },
       h('button', { class: 'btn primary', text: `🔗 Invite friends · ${S.code}`, onclick: copyInvite }),
       h('button', { class: 'btn ghost', text: '✏️ Doodle', title: 'Hide settings and doodle while you wait', onclick: () => { lobbyMinimized = true; render(S); } })),
+    h('p', { class: 'wins-line', name: 'wins', hidden: true }),
     h('div', { class: 'grid' },
       h('label', { class: 'field mode-field' }, h('span', { text: 'Mode' }), h('select', { name: 'preset', onchange: (e) => {
         if (e.target.value !== 'classic' && $('[name=chaos]').value === 'off') $('[name=chaos]').value = 'x4';
@@ -1002,6 +1021,9 @@ function syncLobby() {
   q('customSum').textContent = `✍️ Your own words${s.customWordCount ? ` (${s.customWordCount})` : ''}`;
   const ta = q('customWords');
   if (ta && ta !== active && Array.isArray(s.customWords)) ta.value = s.customWords.join(', ');
+  const wins = q('wins');
+  wins.hidden = !S.wins?.length;
+  wins.textContent = `🏆 Wins tonight: ${(S.wins || []).map((w) => `${w.name} ${w.n}`).join(' · ')}`;
   const n = S.players.filter((p) => p.connected).length;
   const start = q('start');
   if (start) {
@@ -1125,18 +1147,100 @@ function queueThumbs(items) {
   next();
 }
 
+// Running clip/reel recordings, cancelled when the end screen goes away.
+const recordings = new Set();
+
+// A button that records a video and hands it over, showing progress and a
+// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Returns
+// null (no button at all) where the browser cannot record.
+function recorder(label, title, job) {
+  if (!recordingSupported()) return null;
+  const wrap = h('div', { class: 'rec' });
+  const idle = () => fill(wrap, h('button', { class: 'btn', type: 'button', text: label, title, onclick: start }));
+  async function start() {
+    const ctl = new AbortController();
+    recordings.add(ctl);
+    const bar = h('progress', { max: 1, value: 0, 'aria-label': 'Recording progress' });
+    const pct = h('span', { class: 'rec-pct', text: '0%' });
+    const cancel = h('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => ctl.abort() });
+    fill(wrap, h('span', { class: 'rec-label', text: '🎬 Recording' }), bar, pct, cancel);
+    cancel.focus();
+    try {
+      const { segments, name } = job();
+      const clip = await recordSegments(segments, {
+        signal: ctl.signal,
+        onProgress: (f) => { bar.value = f; pct.textContent = `${Math.round(f * 100)}%`; },
+      });
+      const filename = name(clip.ext);
+      const out = deliverClip(clip, filename);
+      if (!out.shared) { toast(`Saved ${filename} 🎬`); idle(); wrap.firstChild?.focus(); return; }
+      // Sharing needs a fresh tap: offer it next to a plain save.
+      const share = h('button', { class: 'btn go', type: 'button', text: '📤 Share', onclick: () => out.share().catch((err) => { if (err?.name !== 'AbortError') out.save(); }) });
+      fill(wrap, share, h('button', { class: 'btn', type: 'button', text: '⬇ Save', onclick: out.save }));
+      share.focus();
+    } catch (err) {
+      if (err?.name !== 'AbortError') { console.error(err); toast('Could not record the video. Try again'); }
+      if (wrap.isConnected) { idle(); wrap.firstChild?.focus(); }
+    } finally {
+      recordings.delete(ctl);
+    }
+  }
+  idle();
+  return wrap;
+}
+
+const fmtSec = (ms) => `${(ms / 1000).toFixed(1)}s`;
+
+// Tapping a gallery drawing replays it stroke by stroke, with the same board.js
+// rendering as the gallery, so chaos effects look identical.
 function openLightbox(g, opener) {
-  const box = h('dialog', { class: 'lightbox', 'aria-label': `Drawing of ${g.word}` },
-    fullPng(g),
-    h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' })));
+  const cv = h('canvas', { class: 'replay-cv', width: W, height: H });
+  const playBtn = h('button', { class: 'btn rp-play', type: 'button' });
+  const scrub = h('input', { class: 'rp-scrub', type: 'range', min: 0, step: 10, value: 0, 'aria-label': 'Replay position' });
+  const time = h('span', { class: 'rp-time' });
+  const speedBtns = SPEEDS.map((x) => h('button', { type: 'button', text: `${x}×`, 'aria-pressed': String(x === 1), onclick: () => {
+    player.speed = x;
+    for (const b of speedBtns) b.setAttribute('aria-pressed', String(b === speedBtns[SPEEDS.indexOf(x)]));
+  } }));
+  const player = new ReplayPlayer(cv, g.strokes || [], (ms, playing, total) => {
+    scrub.value = String(Math.round(ms));
+    time.textContent = `${fmtSec(ms)} / ${fmtSec(total)}`;
+    playBtn.textContent = playing ? '⏸ Pause' : ms >= total ? '↺ Replay' : '▶ Play';
+    playBtn.setAttribute('aria-label', playing ? 'Pause replay' : 'Play replay');
+  });
+  scrub.max = String(Math.round(player.total));
+  scrub.disabled = !player.total;
+  playBtn.onclick = () => (player.playing ? player.pause() : player.play());
+  // Read the position first: pausing repaints and moves the scrubber back.
+  scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
+  const clip = recorder('⬇ Download clip', 'About 6 seconds of video', () => ({
+    segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
+  }));
+  const box = h('dialog', { class: 'lightbox replay', 'aria-label': `Replay of ${g.word} by ${g.drawer?.name || 'someone'}` },
+    h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) })),
+    cv,
+    h('div', { class: 'rp-controls' },
+      playBtn,
+      h('div', { class: 'rp-speed', role: 'group', 'aria-label': 'Replay speed' }, speedBtns),
+      scrub, time),
+    h('div', { class: 'rp-actions' }, clip,
+      h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' }))));
   box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
-  box.addEventListener('close', () => { box.remove(); opener?.focus(); });
+  box.addEventListener('close', () => {
+    player.destroy();
+    box.remove();
+    opener?.focus();
+  });
   document.body.append(box);
   box.showModal();
+  // Reduced motion: open on the finished drawing, paused; play stays a tap away.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) player.seek(player.total);
+  else player.play();
 }
 
 function closeDialogs() {
   thumbJob++;
+  for (const r of recordings) r.abort();
   for (const d of document.querySelectorAll('dialog.lightbox')) d.close();
   const modal = $('#endModal');
   if (modal.open) modal.close();
@@ -1170,8 +1274,11 @@ function renderEnd(fresh) {
   if (!fresh && modal.open && modal.dataset.n === String(gallery.length)) {
     modal.querySelector('[name=again]').hidden = !host;
     modal.querySelector('[name=waitHost]').hidden = host;
+    syncVotes(modal);
     return;
   }
+  // A rebuild drops the end screen's buttons, so stop recordings they started.
+  for (const r of recordings) r.abort();
   modal.dataset.n = String(gallery.length);
   const { ranking = [], awards = [] } = S.end || {};
   const { podium, rest } = podiumGroups(ranking);
@@ -1189,7 +1296,9 @@ function renderEnd(fresh) {
       h('div', { class: 'blk', text: String(g.rank) })))),
     rest.length ? h('ol', { class: 'rest' }, rest.map((p) => h('li', {}, h('b', { text: `#${p.rank}` }), avatarEl(p), p.name, h('span', { class: 'p', text: String(p.score) })))) : null,
     awards.length ? h('div', { class: 'awards' }, awards.map((w) => h('div', { class: 'award' }, h('span', { class: 'i', text: w.icon }), h('span', {}, h('b', { text: `${w.title}: ${w.who}` }), h('small', { text: w.detail }))))) : null,
+    gallery.length > 1 ? h('section', { class: 'mvp-feature', name: 'mvp', 'aria-live': 'polite' }) : null,
     gallery.length ? h('h3', { class: 'section-h', text: '🖼️ Tonight’s gallery' }) : null,
+    gallery.length > 1 ? h('p', { class: 'muted vote-hint', text: 'Tap a drawing to replay it. Vote 🏆 for your favourite (not your own).' }) : null,
     h('div', { class: 'gallery' }, gallery.map((g) => {
       const cv = h('canvas', { class: 'thumb', width: 280, height: 210 });
       thumbs.push([cv, g]);
@@ -1199,10 +1308,13 @@ function renderEnd(fresh) {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
       const by = byline(g);
-      return h('figure', { class: 'gal' },
-        h('button', { class: 'thumb-btn', 'aria-label': `Open drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
+      const own = g.drawer?.id === myId;
+      return h('figure', { class: 'gal', 'data-id': String(g.id) },
+        h('button', { class: 'thumb-btn', 'aria-label': `Replay drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
           h('span', {}, h('span', { class: 'w', text: g.word }), h('br'), h('span', { class: 'by', text: by })),
+          gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, title: own ? 'Your own drawing' : 'Vote for this drawing',
+            onclick: () => send('vote', { id: S.mvp?.mine === g.id ? null : g.id }) }) : null,
           h('button', { class: 'dl', text: '⬇', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl })));
     })),
     h('div', { class: 'end-actions' },
@@ -1212,13 +1324,54 @@ function renderEnd(fresh) {
           cancel: 'Stay a little longer',
         }) }),
       h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
-        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs })) }) }),
+        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs })),
+          mvp: mvpDrawings().map(({ g, votes }) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs, votes })) }) }),
+      gallery.length ? recorder('⭐ Download game reel', 'Every drawing back to back as one video', () => ({
+        segments: reelSegments(gallery), name: (ext) => clipName(`squiggle-${S?.code || roomCode || 'game'}`, 'everyone', ext),
+      })) : null,
       h('button', { class: 'btn big', text: '🔗 Invite more friends', onclick: copyInvite }),
       h('p', { class: 'muted', name: 'waitHost', hidden: host, text: 'The host can take everyone back to the lobby for another game.' }))));
+  syncVotes(modal);
   if (!modal.open) modal.showModal();
   queueThumbs(thumbs);
   (modal.querySelector('[name=again]:not([hidden])') || modal.querySelector('#endTitle')).focus();
 }
+const mvpDrawings = () => (S?.mvp?.winners || []).map((id) => gallery.find((g) => g.id === id)).filter(Boolean)
+  .map((g) => ({ g, votes: S.mvp.tally[g.id] || 0 }));
+
+// Live MVP votes, updated in place so thumbnails and focus survive each vote.
+function syncVotes(modal) {
+  const mvp = S.mvp || { tally: {}, winners: [], mine: null };
+  for (const fig of modal.querySelectorAll('.gal[data-id]')) {
+    const id = +fig.dataset.id, n = mvp.tally[id] || 0, mine = mvp.mine === id;
+    fig.classList.toggle('is-mvp', mvp.winners.includes(id));
+    const b = fig.querySelector('.vote');
+    if (!b) continue;
+    b.textContent = `${mine ? '✓' : '🏆'} ${n}`;
+    b.setAttribute('aria-pressed', String(mine));
+    b.setAttribute('aria-label', `${mine ? 'Remove your vote for' : 'Vote for'} this drawing, ${n} vote${n === 1 ? '' : 's'}`);
+  }
+  const box = modal.querySelector('[name=mvp]');
+  const winners = mvpDrawings();
+  const key = winners.map((w) => `${w.g.id}:${w.votes}`).join(',');
+  if (!box || box.dataset.key === key) return;
+  box.dataset.key = key;
+  if (!winners.length) {
+    fill(box, h('p', { class: 'mvp-empty', text: '🏆 Gallery MVP: no votes yet. Pick a favourite below!' }));
+    return;
+  }
+  const thumbs = [];
+  fill(box,
+    h('h3', { class: 'section-h', text: `🏆 Gallery MVP${winners.length > 1 ? 's · it’s a tie' : ''}` }),
+    h('div', { class: 'mvp-row' }, winners.map(({ g, votes }) => {
+      const cv = h('canvas', { class: 'thumb', width: 320, height: 240 });
+      thumbs.push([cv, g]);
+      return h('button', { class: 'mvp-card', type: 'button', 'aria-label': `Replay MVP drawing of ${g.word}`, onclick: (e) => openLightbox(g, e.currentTarget) },
+        cv, h('span', { class: 'w', text: g.word }), h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'} · ${votes} vote${votes === 1 ? '' : 's'}` }));
+    })));
+  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || []);
+}
+
 // The end screen has no "dismiss" — Esc must not strand players behind it.
 $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 
