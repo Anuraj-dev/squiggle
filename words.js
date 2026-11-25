@@ -1778,7 +1778,9 @@ function answerTest(word) {
   const w = canonKey(word);
   if (!w) return () => false;
   const fw = flat(w);
-  const forms = new Set([fw, ...[...singulars(word), ...plurals(word), ...plurals(w)].map((s) => flat(canonKey(s)))]);
+  // Generated plurals are matched as spelled, never through the alias table:
+  // "slack" -> "slacks" must not become the alias target "pants".
+  const forms = new Set([fw, ...singulars(word).map((s) => flat(canonKey(s))), ...[...plurals(word), ...plurals(w)].map((s) => flat(norm(s)))]);
   forms.delete('');
   return (guess) => {
     const g = canonKey(guess);
@@ -1801,6 +1803,10 @@ export function wrapperStages(text) {
   const out = [];
   const op = OPENERS.find((o) => o.length < toks.length && o.every((t, k) => toks[k] === t));
   if (op) out.push((toks = toks.slice(op.length)).join(' '));
+  // Fillers off but the article kept, for answers that start with one ("the floss please").
+  let keep = toks;
+  while (keep.length > 1 && FILLERS.has(keep.at(-1))) keep = keep.slice(0, -1);
+  if (keep !== toks && ARTICLES.has(toks[0])) out.push(keep.join(' '));
   if (toks.length > 1 && ARTICLES.has(toks[0])) out.push((toks = toks.slice(1)).join(' '));
   while (toks.length > 1 && FILLERS.has(toks.at(-1))) out.push((toks = toks.slice(0, -1)).join(' '));
   return out.length ? out : [toks.join(' ')];
@@ -1822,7 +1828,8 @@ export function matchesAnswer(guess, word) {
 export function mentionsAnswer(text, word) {
   const w = canonKey(word);
   if (!w) return false;
-  const span = Math.max(wordCount(norm(word)), wordCount(w), aliasWordsFor(w)) + 1;
+  // At least 5 words, so a split spelling ("r ab bit") is still caught.
+  const span = Math.max(5, wordCount(norm(word)) + 1, wordCount(w) + 1, aliasWordsFor(w) + 1);
   const toks = norm(text).split(' ').filter(Boolean);
   const same = answerTest(word);
   for (let i = 0; i < toks.length; i++) {

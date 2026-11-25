@@ -190,6 +190,16 @@ test('regular plurals match in both directions for any word, without fuzzy wins'
   expect(mentionsAnswer('this is a gas', 'as')).toBe(false);
 });
 
+test('generated plurals never resolve through aliases; split spellings and article answers still match', () => {
+  expect(matchesAnswer('slacks', 'slack')).toBe(true);
+  expect(matchesAnswer('pants', 'slack')).toBe(false);
+  expect(mentionsAnswer('my pants got wet', 'slack')).toBe(false);
+  expect(mentionsAnswer('r ab bit or dog', 'rabbit')).toBe(true);
+  expect(matchesAnswer('is it the floss please', 'the floss')).toBe(true);
+  expect(matchesAnswer('the floss pls', 'the floss')).toBe(true);
+  expect(matchesAnswer('is it a cat lol', 'cat')).toBe(true);
+});
+
 test('answer mentions find long answers and aliases inside longer lists', () => {
   expect(mentionsAnswer('a dog with a red hat or cat', 'a dog with a red hat')).toBe(true);
   expect(mentionsAnswer('maybe a dog with a red hat', 'a dog with a red hat')).toBe(true);
