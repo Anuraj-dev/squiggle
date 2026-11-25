@@ -1432,6 +1432,53 @@ test('MVP vote: end state only, not your own, one changeable vote each, ties sha
   expect(r.votes.size).toBe(0);
 });
 
+test('MVP vote: leaving drops the vote; fresh or post-grace joins cannot vote; a reconnected artist still cannot self-vote; tokens stay private', () => {
+  const ctx = setup(3);
+  const [a, b, c] = ctx.ss;
+  a.do('start');
+  const byDrawer = {};
+  for (let i = 0; i < 3; i++) byDrawer[drawAndSkip(ctx).id] = ctx.room.gallery.at(-1).id;
+  const r = ctx.room;
+  expect(r.state).toBe('end');
+  const token = (s) => s.out.find((m) => m.t === 'welcome').token;
+  // A leaver's vote is removed from the tally.
+  c.do('vote', { id: byDrawer[a.id] });
+  expect(a.state().mvp.tally).toEqual({ [byDrawer[a.id]]: 1 });
+  c.do('leave');
+  expect(a.state().mvp.tally).toEqual({});
+  // A fresh join at the end screen cannot vote.
+  const f = sock('F');
+  f.do('join', { room: ctx.code, name: 'F' });
+  f.do('vote', { id: byDrawer[a.id] });
+  expect(r.votes.size).toBe(0);
+  expect(f.since(0, 'toast').at(-1).text).toMatch(/Only players/);
+  // The artist reconnecting within grace is the same voter and still cannot vote for their own drawing.
+  const tb = token(b);
+  b.drop();
+  const b2 = sock('B2');
+  b2.do('join', { room: ctx.code, name: 'B', token: tb });
+  b2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(0);
+  b2.do('vote', { id: byDrawer[a.id] });
+  expect(b2.state().mvp.mine).toBe(byDrawer[a.id]);
+  // After the grace window a rejoin is a new player with a new token: no vote.
+  const ta = token(a);
+  a.drop();
+  advance(GAME_GRACE + 1);
+  expect(r.players.has(a.id)).toBe(false);
+  const a2 = sock('A2');
+  a2.do('join', { room: ctx.code, name: 'A', token: ta });
+  expect(a2.out.find((m) => m.t === 'welcome').token).not.toBe(ta);
+  a2.do('vote', { id: byDrawer[b.id] });
+  expect(r.votes.size).toBe(1);
+  // No reconnect token reaches any client in snapshots or the gallery.
+  const tokens = [...r.players.values()].map((p) => p.token).concat(ta, tb, token(c));
+  for (const s of [a, b, c, f, b2, a2]) {
+    const seen = JSON.stringify(s.out.filter((m) => m.t !== 'welcome'));
+    for (const t of tokens) expect(seen).not.toContain(t);
+  }
+});
+
 test('MVP vote is ignored before the game ends', () => {
   const ctx = setup(2);
   ctx.ss[0].do('start');

@@ -159,8 +159,13 @@ export class Room {
     this.finale = false;
     this.finaleSpent = false;
     this.galleryN = 0;
-    // Gallery MVP: voter id -> gallery drawing id. End state only.
+    // Gallery MVP, end state only, keyed by reconnect token (server-side only,
+    // and kept across a within-grace reconnect): voter token -> drawing id.
+    // `voters` is frozen at endGame to the players of the finished match;
+    // `galleryAuthors` maps drawing id -> its artist's token.
     this.votes = new Map();
+    this.voters = new Set();
+    this.galleryAuthors = new Map();
     // Wins tonight, keyed by reconnect token so a win follows the player across
     // reconnects and survives rematches: token -> { name, n }.
     this.wins = new Map();
@@ -463,7 +468,9 @@ export class Room {
     }
     for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false });
     this.gallery = [];
+    this.galleryAuthors.clear();
     this.votes.clear();
+    this.voters.clear();
     this.round = 0;
     this.chaos = null;
     this.finaleSpent = false;
@@ -745,7 +752,8 @@ export class Room {
     this.beginPhase('reveal');
     if (is(this.guesserChaos, 'batches')) { this.batchReleased = true; this.publishCanvas(); }
     this.awardDrawer();
-    if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
+    if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.galleryAuthors.delete(this.gallery.shift().id);
+    if (this.strokes.length && drawer) this.galleryAuthors.set(this.galleryN + 1, drawer.token);
     if (this.strokes.length) this.gallery.push({
       id: ++this.galleryN,
       word: this.word, deck: this.deck, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos, endMs,
@@ -807,16 +815,17 @@ export class Room {
     for (const id of this.votes.values()) tally[id] = (tally[id] || 0) + 1;
     const top = Math.max(0, ...Object.values(tally));
     const winners = top ? this.gallery.filter((g) => tally[g.id] === top).map((g) => g.id) : [];
-    return { tally, winners, mine: this.votes.get(p.id) ?? null };
+    return { tally, winners, mine: this.votes.get(p.token) ?? null };
   }
 
   vote(p, id) {
     if (this.state !== 'end') return;
-    if (id == null) { this.votes.delete(p.id); return this.sync(); }
+    if (!this.voters.has(p.token)) return this.send(p, 'toast', { text: 'Only players from this game can vote' });
+    if (id == null) { this.votes.delete(p.token); return this.sync(); }
     const g = this.gallery.find((x) => x.id === id);
     if (!g) return;
-    if (g.drawer?.id === p.id) return this.send(p, 'toast', { text: 'Vote for someone else’s drawing' });
-    this.votes.set(p.id, id);
+    if (this.galleryAuthors.get(g.id) === p.token) return this.send(p, 'toast', { text: 'Vote for someone else’s drawing' });
+    this.votes.set(p.token, id);
     this.sync();
   }
 
@@ -845,6 +854,7 @@ export class Room {
     this.beginPhase('end');
     this.endData = { ranking: tiedRanking(players), awards };
     this.votes.clear();
+    this.voters = new Set(players.map((q) => q.token));
     // Every top scorer of a finished game gets a win; a game nobody scored in has no winner.
     for (const r of this.endData.ranking) {
       const q = this.players.get(r.id);
@@ -866,6 +876,7 @@ export class Room {
       drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [], finale: false, finaleSpent: false,
     });
     this.votes.clear();
+    this.voters.clear();
     this.resetCanvas();
     this.guessed.clear();
     this.lateSolved.clear();
@@ -899,6 +910,8 @@ export class Room {
     clock.clear(p.dropTimer);
     clock.clear(p.resyncT);
     this.players.delete(id);
+    this.voters.delete(p.token);
+    this.votes.delete(p.token);
     this.order = this.order.filter((x) => x !== id);
     this.queue = this.queue.filter((x) => x !== id);
     if (!this.players.size) {
