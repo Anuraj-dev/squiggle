@@ -1,0 +1,9 @@
+{
+  "id": "dev",
+  "name": "Dev Life",
+  "icon": "💻",
+  "easy": ["bug report", "coffee mug code", "rubber duck debugging"],
+  "medium": ["merge conflict", "infinite loop", "stack overflow", "pull request"],
+  "hard": ["works on my machine", "spaghetti code", "production fire"],
+  "aliases": { "rubber ducking": "rubber duck debugging" }
+}

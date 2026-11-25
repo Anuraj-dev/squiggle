@@ -250,13 +250,17 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .lobby .mode-field { grid-column: 1 / -1; }
 .lobby .word-set { grid-column: 1 / -1; border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
 .word-set legend { padding: 0; margin-bottom: 0.3rem; font-weight: 600; font-size: 0.9rem; }
-.seg { display: grid; grid-template-columns: 1fr 1fr; border: 2px solid var(--ink); border-radius: 12px; overflow: hidden; background: #fff; }
-.seg label { position: relative; text-align: center; padding: 0.55rem 0.6rem; font-weight: 700; cursor: pointer; }
-.seg label + label { border-left: 2px solid var(--ink); }
-.seg input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
-.seg label:has(input:checked) { background: var(--grape); color: #fff; }
-.seg label:has(input:focus-visible) { outline: 3px solid var(--grape); outline-offset: -3px; }
-.seg label:has(input:disabled) { cursor: default; opacity: 0.7; }
+.deck-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.deck-chip { position: relative; display: inline-flex; align-items: center; padding: 0.35rem 0.75rem; border: 2px solid var(--ink); border-radius: 999px; background: #fff; font-weight: 700; font-size: 0.9rem; cursor: pointer; white-space: nowrap; transition: transform 0.1s; }
+.deck-chip input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+.deck-chip:has(input:checked) { background: var(--grape); color: #fff; box-shadow: var(--shadow-sm); }
+.deck-chip:has(input:focus-visible) { outline: 3px solid var(--grape); outline-offset: 2px; }
+.deck-chip:has(input:disabled) { cursor: default; }
+.deck-chip:has(input:disabled:not(:checked)) { opacity: 0.6; }
+.deck-chip:not(:has(input:disabled)):active { transform: scale(0.96); }
+.choice .badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem; }
+.deck-badge, .deck-pill { font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 999px; border: 2px solid var(--ink); background: var(--paper-2); white-space: nowrap; }
+.word-area .deck-row { flex-basis: 100%; display: flex; justify-content: center; margin-bottom: -0.25rem; }
 .settings-pill { position: absolute; top: 10px; left: 10px; z-index: 3; }
 .settings-pill, .overlay .btn { font-size: 0.95rem; }
 .react-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; }

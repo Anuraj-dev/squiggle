@@ -1,0 +1,9 @@
+{
+  "id": "desi",
+  "name": "Desi & Campus",
+  "icon": "🛺",
+  "easy": ["auto rickshaw", "chai glass", "samosa"],
+  "medium": ["cricket stumps", "hostel mess", "pressure cooker whistle", "rangoli"],
+  "hard": ["last bench", "exam hall", "wedding baraat"],
+  "aliases": { "autorickshaw": "auto rickshaw" }
+}

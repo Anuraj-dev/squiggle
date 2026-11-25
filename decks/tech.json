@@ -1,0 +1,9 @@
+{
+  "id": "tech",
+  "name": "Tech & AI",
+  "icon": "🤖",
+  "easy": ["smart speaker", "delivery drone", "humanoid robot"],
+  "medium": ["chatbot", "ai art", "robot dog walking", "smart fridge"],
+  "hard": ["neural network", "robot vacuum stuck", "data center"],
+  "aliases": { "ai chatbot": "chatbot" }
+}

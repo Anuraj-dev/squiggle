@@ -1,0 +1,9 @@
+{
+  "id": "memes",
+  "name": "Internet & Memes",
+  "icon": "😂",
+  "easy": ["nyan cat", "doge", "thumbs up emoji"],
+  "medium": ["rickroll", "this is fine", "loading spinner", "grumpy cat"],
+  "hard": ["distracted boyfriend", "galaxy brain", "cat on a keyboard"],
+  "aliases": { "rick roll": "rickroll" }
+}

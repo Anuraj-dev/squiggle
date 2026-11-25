@@ -710,11 +710,13 @@ function renderWord(isDrawer, drawer) {
   if (S.state === 'end') return fill(area, h('span', { class: 'big', text: '🏁 Game over' }));
   if (S.state === 'choosing') return fill(area, h('span', { class: 'big', text: isDrawer ? 'Your turn ✏️' : `${drawer?.name || '…'} is choosing` }));
   if (S.state === 'reveal') return fill(area, h('span', { class: 'lbl', text: 'the word was' }), h('span', { class: 'big', text: S.reveal?.word || '' }));
+  // The chosen word's deck is a public clue for everyone while drawing.
+  const deck = S.state === 'drawing' && S.deck ? h('span', { class: 'deck-row' }, h('span', { class: 'deck-pill', title: 'Word deck', text: `${S.deck.icon} ${S.deck.name}` })) : null;
   if (S.word) {
-    return fill(area, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
+    return fill(area, deck, h('span', { class: 'lbl', text: isDrawer ? 'draw this' : 'you got it' }), h('span', { class: `big${isDrawer ? '' : ' good'}`, text: S.word }));
   }
   const hint = S.hint || '';
-  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, h('span', { class: 'big', text: '?' }));
+  if (!S.hint && is(S.guesserChaos, 'mystery')) return fill(area, deck, h('span', { class: 'big', text: '?' }));
   const slots = [...hint].map((ch) => {
     if (ch === ' ') return h('span', { class: 'slot gap' });
     if (ch === '_') return h('span', { class: 'slot' }, ' ');
@@ -722,7 +724,7 @@ function renderWord(isDrawer, drawer) {
     return h('span', { class: 'slot lit', text: ch });
   });
   const counts = hint.split(' ').map((w) => w.replace(/[^a-z0-9_]/gi, '').length).join(' ');
-  fill(area, h('span', { class: 'slots', role: 'img', 'aria-label': `Hint: ${hint.replace(/_/g, ' blank ')}` }, slots), h('span', { class: 'counts', text: counts }));
+  fill(area, deck, h('span', { class: 'slots', role: 'img', 'aria-label': `Hint: ${hint.replace(/_/g, ' blank ')}` }, slots), h('span', { class: 'counts', text: counts }));
 }
 
 let overlayKey = '', lobbyMinimized = false;
@@ -849,7 +851,9 @@ function buildChoosing(isDrawer, drawer) {
       h('h2', { text: 'Pick a word' }),
       chaosCard(S.chaos, 'artist'), chaosCard(S.guesserChaos, 'guesser'),
       h('div', { class: 'choices' }, S.choices.map((c, i) => h('button', { class: 'choice', onclick: () => act('choose', { i }) },
-        h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` }),
+        h('span', { class: 'badges' },
+          c.deck ? h('span', { class: 'deck-badge', text: `${c.deck.icon} ${c.deck.name}` }) : null,
+          h('span', { class: `diff ${c.diff}`, text: `${c.diff} ×${DIFF_MULT[c.diff] || 1}` })),
         h('span', { class: 'w', text: c.word })))),
       h('div', { class: 'choice-actions' },
         S.rerolled ? null : h('button', { class: 'btn ghost', text: 'New words', onclick: () => act('reroll') }),
@@ -889,7 +893,6 @@ const TIMES = [30, 40, 60, 80, 100, 120, 150, 180, 240];
 const CHOICES = [1, 2, 3, 4, 5];
 const HINT_COUNTS = [0, 1, 2, 3, 4, 5];
 const DIFFICULTIES = { mix: 'Mixed', easy: 'Easy', medium: 'Medium', hard: 'Hard' };
-const WORD_SETS = { legacy: 'Legacy', new: 'New' };
 const CHAOS_OPTS = { off: 'Off', x1: '1x · ~1 in 4 turns', x2: '2x · ~1 in 2 turns', x3: '3x · ~3 in 4 turns', x4: '4x · every turn' };
 const PRESETS = { classic: 'Classic', artist: 'Artist Chaos', guesser: 'Guesser Chaos', mixed: 'Mixed Chaos' };
 const SELECTS = ['rounds', 'drawTime', 'wordChoices', 'hints', 'difficulty', 'chaos', 'preset'];
@@ -899,7 +902,7 @@ function readSettings() {
   const preset = q('preset').value;
   const out = {
     rounds: +q('rounds').value, drawTime: +q('drawTime').value, wordChoices: +q('wordChoices').value, hints: +q('hints').value,
-    difficulty: q('difficulty').value, wordSet: $('#overlay').querySelector('[name=wordSet]:checked')?.value,
+    difficulty: q('difficulty').value, decks: [...$('#overlay').querySelectorAll('.deck-chips input:checked')].map((el) => el.value),
     chaos: preset === 'classic' ? 'off' : q('chaos').value,
     chaosPool: preset === 'classic' ? 'mixed' : preset, customOnly: q('customOnly').checked,
   };
@@ -930,10 +933,10 @@ function buildLobby() {
         pushSettings();
       } }, Object.entries(PRESETS).map(([value, text]) => h('option', { value, text })))),
       h('fieldset', { class: 'word-set' },
-        h('legend', { text: 'Word set' }),
-        h('div', { class: 'seg' }, Object.entries(WORD_SETS).map(([value, text]) => h('label', {},
-          h('input', { type: 'radio', name: 'wordSet', value, onchange: pushSettings }),
-          h('span', { text }))))),
+        h('legend', { text: 'Word decks' }),
+        h('div', { class: 'deck-chips' }, (S.deckCatalog || []).map((d) => h('label', { class: 'deck-chip', title: `${d.count} words` },
+          h('input', { type: 'checkbox', value: d.id, onchange: pushSettings }),
+          h('span', { text: `${d.icon} ${d.name}` }))))),
       h('label', { class: 'field' }, h('span', { text: 'Rounds' }), select('rounds', ROUNDS, String)),
       h('label', { class: 'field' }, h('span', { text: 'Draw time' }), select('drawTime', TIMES, (v) => `${v}s`)),
       h('label', { class: 'field' }, h('span', { text: 'Word choices' }), select('wordChoices', CHOICES, (v) => `${v} word${v > 1 ? 's' : ''}`)),
@@ -971,9 +974,11 @@ function syncLobby() {
     if (sel !== active) sel.value = String(value);
     sel.disabled = !host;
   }
-  for (const el of $('#overlay').querySelectorAll('[name=wordSet]')) {
-    if (el !== active) el.checked = el.value === (s.wordSet || 'legacy');
-    el.disabled = !host;
+  // At least one deck stays on unless the game only uses the host's words.
+  const decks = new Set(s.decks || []);
+  for (const el of $('#overlay').querySelectorAll('.deck-chips input')) {
+    if (el !== active) el.checked = decks.has(el.value);
+    el.disabled = !host || (!s.customOnly && decks.size === 1 && decks.has(el.value));
   }
   $('#chaosFrequency').hidden = s.chaos === 'off';
   const picked = new Set(s.chaosIds || CHAOS_MODES.map((c) => c.id));

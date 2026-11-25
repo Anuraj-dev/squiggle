@@ -1,8 +1,9 @@
 // Room state machine and message handlers. Transport-agnostic: sockets only
 // need send(string), close(code, reason) and a mutable `data` object, and all
 // time goes through `clock`, so tests can drive it deterministically.
-import { WORDS, matchesAnswer, mentionsAnswer, canonKey, dedupeCustom } from './words.js';
-import { NEW_WORDS } from './words-new.js';
+import { matchesAnswer, mentionsAnswer, canonKey, singulars, dedupeCustom } from './words.js';
+import { DECK_BY_ID, DECK_CATALOG, DEFAULT_DECKS, CUSTOM_DECK, ALL_DECK_KEYS, deckInfo, cleanDeckIds } from './decks.js';
+import { WordHistory } from './history.js';
 import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
@@ -20,7 +21,7 @@ export const clock = {
 };
 
 const DEFAULTS = {
-  rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', wordSet: 'legacy', customWords: [], customOnly: false,
+  rounds: 3, drawTime: 80, chaos: 'x2', chaosPool: 'mixed', chaosIds: CHAOS_IDS, wordChoices: 3, hints: 2, difficulty: 'mix', decks: DEFAULT_DECKS, customWords: [], customOnly: false,
 };
 const MAX_PLAYERS = 12;
 const REACTIONS = ['😂', '🔥', '😮', '🤯', '💀', '👏', '👎'];
@@ -28,11 +29,25 @@ const DRAW_MSGS = new Set(['stroke', 'pts', 'undo', 'redo', 'clear']);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DIFFS = ['easy', 'medium', 'hard'];
 const DIFFICULTIES = ['mix', ...DIFFS];
-const WORD_SETS = { legacy: WORDS, new: NEW_WORDS };
 export const rooms = new Map();
 const rand = (a) => a[Math.floor(Math.random() * a.length)];
 const shuffle = (a) => shuffleIn(a, Math.random);
 const raw = (ws, t, data = {}) => { try { ws.send(JSON.stringify({ t, ...data })); } catch {} };
+
+// Server-wide word history, created on first use so importing game.js stays
+// side-effect free. Tests inject an in-memory store with setWordHistory().
+let sharedHistory = null;
+export function setWordHistory(h) { sharedHistory = h; }
+const wordHistory = () => sharedHistory ||= new WordHistory({
+  path: process.env.SQUIGGLE_HISTORY || new URL('./data/word-history.json', import.meta.url).pathname,
+  valid: ALL_DECK_KEYS,
+});
+
+// Family cooldown: content words (4+ letters, not function words) plus their
+// singulars, so "golf ball" and "golf carts" count as one family.
+const STOPWORDS = new Set(['with', 'from', 'that', 'this', 'into', 'onto', 'over', 'under', 'your', 'their', 'them', 'they', 'have', 'some', 'what', 'when', 'then', 'than', 'very', 'just', 'upon', 'about', 'after', 'before', 'while']);
+const familyTokens = (w) => norm(w).split(' ').filter((t) => t.length >= 4 && !STOPWORDS.has(t)).flatMap((t) => [t, ...singulars(t)]);
+const RECENT_TURNS = 10;
 
 function makeCode() {
   let c;
@@ -52,7 +67,7 @@ function take(p, key, cap, perSec) {
 }
 
 export class Room {
-  constructor(code) {
+  constructor(code, history = wordHistory()) {
     this.code = code;
     this.players = new Map();
     this.order = [];
@@ -83,7 +98,12 @@ export class Room {
     this.guessed = new Map();
     this.lateSolved = new Set();
     this.gallery = [];
-    this.used = new Set();
+    // Word memory outlives games (rematches): deck words in the shared history,
+    // custom words only here, and content tokens offered in the last turns.
+    this.history = history;
+    this.customSeen = new Map();
+    this.recentOffers = [];
+    this.deck = null;
     this.chaos = null;
     this.guesserChaos = null;
     this.lastChaosId = null;
@@ -199,6 +219,8 @@ export class Room {
       hint: this.word && drawing && !hideLength ? this.hint() : null,
       word: this.word && this.canSeeWord(p) ? this.word : null,
       diff: this.word ? this.diff : null,
+      deck: this.word ? this.deck : null,
+      deckCatalog: this.state === 'lobby' ? DECK_CATALOG : null,
       choices: this.state === 'choosing' && p.id === this.drawerId ? this.choices : null,
       rerolled: this.rerolled,
       chaos: this.chaos,
@@ -398,7 +420,6 @@ export class Room {
     }
     for (const q of this.players.values()) Object.assign(q, { score: 0, streak: 0, bestStreak: 0, close: 0, fastest: null, rescued: false });
     this.gallery = [];
-    this.used.clear();
     this.round = 0;
     this.chaos = null;
     this.nextRound();
@@ -452,43 +473,85 @@ export class Room {
     this.strokeUsed = 0;
     this.guessBudgets.clear();
     this.rollChaos();
+    this.deck = null;
     this.choices = this.pickWords(this.settings.wordChoices);
     this.phase(CHOOSE_MS, () => this.choose(Math.floor(Math.random() * this.choices.length)));
     this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
     this.updatePause();
   }
 
-  // Fresh words first, then already-used ones; `avoid` (the previous choices
-  // on a reroll) only when nothing else exists. Custom-only never falls back
-  // to the default bank.
+  // Deals up to n cards. Per card: rotate through the enabled decks (custom
+  // words are one more deck, max one card unless custom-only), pick a tier
+  // (random per card for "mix"), then pick at random among the oldest 25% of
+  // that pool by last-shown time (every never-shown word if there are more),
+  // skipping families offered in the last turns. Relaxes in order: family
+  // cooldown, the 25% window, then anything not already on a card; `avoid`
+  // (the previous cards on a reroll) only when nothing else exists.
+  // Every dealt word counts as seen, picked or not.
   pickWords(n, avoid = []) {
-    const { customWords, customOnly, difficulty, wordSet } = this.settings;
-    const bank = WORD_SETS[wordSet] || WORDS;
+    const { customWords, customOnly, difficulty } = this.settings;
+    const tiers = difficulty === 'mix' ? DIFFS : [difficulty];
+    const decks = customOnly ? [] : this.settings.decks.map((id) => DECK_BY_ID.get(id)).filter(Boolean)
+      .map((d) => ({ info: deckInfo(d), list: (t) => d[t], seen: (k) => this.history.get(k), max: n }));
+    const custom = customWords.length
+      ? [{ info: CUSTOM_DECK, custom: true, list: () => customWords, seen: (k) => this.customSeen.get(k) || 0, max: customOnly ? n : 1 }] : [];
+    const sources = shuffle([...decks, ...custom]);
     const avoidKeys = new Set(avoid.map(canonKey));
-    const usedKeys = new Set([...this.used].map(canonKey));
-    const rank = (w) => (avoidKeys.has(canonKey(w)) ? 2 : usedKeys.has(canonKey(w)) ? 1 : 0);
-    const ordered = (list) => shuffle(list).sort((a, b) => rank(a) - rank(b));
+    const taken = new Set();
+    const family = new Set(this.recentOffers.flatMap((o) => [...o.tokens]));
+    const dealt = new Map(sources.map((s) => [s, 0]));
     const out = [];
-    const keys = new Set();
-    const take1 = (list, diff) => {
-      for (const w of list) {
-        const k = canonKey(w);
-        if (k && !keys.has(k)) { keys.add(k); out.push({ word: w, diff }); return true; }
-      }
-      return false;
-    };
-    const cDiff = 'medium';
-    const customList = ordered(customWords);
-    const freshCustom = () => customList.filter((w) => !keys.has(canonKey(w)) && rank(w) === 0);
-    const pool = difficulty === 'mix' ? DIFFS : [difficulty];
-    const diffs = n >= 3 ? pool : shuffle(pool);
     for (let i = 0; i < n; i++) {
-      if (customOnly) { if (!take1(customList, cDiff)) break; continue; }
-      if (freshCustom().length && Math.random() < 0.5 && take1(freshCustom(), cDiff)) continue;
-      const diff = diffs[i % diffs.length];
-      take1(ordered(bank[diff]), diff);
+      // Decks with the fewest cards so far first (stable sort keeps the shuffle).
+      const order = sources.filter((s) => dealt.get(s) < s.max).sort((a, b) => dealt.get(a) - dealt.get(b));
+      let card = null;
+      for (const allowAvoid of [false, true]) {
+        for (const src of order) if ((card = this.drawFrom(src, tiers, taken, avoidKeys, family, allowAvoid))) break;
+        if (card) break;
+      }
+      if (!card) break;
+      dealt.set(card.src, dealt.get(card.src) + 1);
+      taken.add(card.key);
+      for (const t of familyTokens(card.word)) family.add(t);
+      out.push(card);
     }
-    return out.sort((a, b) => DIFFS.indexOf(a.diff) - DIFFS.indexOf(b.diff));
+    this.noteDealt(out);
+    return shuffle(out.map(({ word, diff, src }) => ({ word, diff, deck: src.info })));
+  }
+
+  drawFrom(src, tiers, taken, avoidKeys, family, allowAvoid) {
+    for (const tier of src.custom ? ['medium'] : shuffle([...tiers])) {
+      const all = src.list(tier).map((word) => ({ word, key: canonKey(word) })).filter((x) => x.key);
+      if (!all.length) continue;
+      const ranked = shuffle(all).sort((a, b) => src.seen(a.key) - src.seen(b.key));
+      const fresh = ranked.filter((x) => !src.seen(x.key)).length;
+      const window = new Set(ranked.slice(0, Math.max(fresh, Math.ceil(all.length / 4))));
+      const levels = allowAvoid ? [() => true] : [
+        (x) => window.has(x) && !familyTokens(x.word).some((t) => family.has(t)),
+        (x) => window.has(x),
+        () => true,
+      ];
+      for (const ok of levels) {
+        const pool = all.filter((x) => !taken.has(x.key) && (allowAvoid || !avoidKeys.has(x.key)) && ok(x));
+        if (pool.length) return { ...rand(pool), diff: src.custom ? 'medium' : tier, src };
+      }
+    }
+    return null;
+  }
+
+  // Marks dealt words seen (custom ones only in this room, never on disk) and
+  // records their families; a reroll extends the current turn's entry.
+  noteDealt(cards) {
+    const now = clock.now();
+    const deck = cards.filter((c) => !c.src.custom).map((c) => c.key);
+    if (deck.length) this.history.mark(deck, now);
+    for (const c of cards) if (c.src.custom) this.customSeen.set(c.key, now);
+    let entry = this.recentOffers.at(-1);
+    if (entry?.seq !== this.turnSeq) {
+      this.recentOffers.push(entry = { seq: this.turnSeq, tokens: new Set() });
+      if (this.recentOffers.length > RECENT_TURNS) this.recentOffers.shift();
+    }
+    for (const c of cards) for (const t of familyTokens(c.word)) entry.tokens.add(t);
   }
 
   choose(i) {
@@ -503,8 +566,8 @@ export class Room {
     this.batchReleased = false;
     this.word = c.word;
     this.diff = c.diff;
+    this.deck = c.deck;
     this.choices = [];
-    this.used.add(c.word);
     this.drawnThisRound.add(this.drawerId);
     // Only guessers present now can score this turn; later arrivals spectate.
     this.turnEligible = this.order.filter((id) => id !== this.drawerId && this.players.get(id)?.connected);
@@ -788,7 +851,7 @@ const handlers = {
       wordChoices: clamp(s.wordChoices, 1, 5, DEFAULTS.wordChoices),
       hints: clamp(s.hints, 0, 5, DEFAULTS.hints),
       difficulty: DIFFICULTIES.includes(s.difficulty) ? s.difficulty : 'mix',
-      wordSet: Object.hasOwn(WORD_SETS, s.wordSet) ? s.wordSet : DEFAULTS.wordSet,
+      decks: s.decks == null ? room.settings.decks : cleanDeckIds(s.decks),
       customWords: s.customWords == null ? room.settings.customWords : dedupeCustom(s.customWords),
       customOnly: !!s.customOnly,
     };

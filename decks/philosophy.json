@@ -1,0 +1,9 @@
+{
+  "id": "philosophy",
+  "name": "Philosophy",
+  "icon": "🧠",
+  "easy": ["thinker statue", "yin yang"],
+  "medium": ["trolley problem", "plato cave", "ship of theseus", "occams razor"],
+  "hard": ["brain in a vat", "sisyphus boulder", "butterfly dream"],
+  "aliases": { "platos cave": "plato cave" }
+}

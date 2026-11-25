@@ -1,0 +1,9 @@
+{
+  "id": "double",
+  "name": "Double Meaning",
+  "icon": "🔀",
+  "easy": ["rust", "python", "java"],
+  "medium": ["shell", "firewall", "spam"],
+  "hard": ["git", "kernel", "keyboard warrior"],
+  "aliases": {}
+}

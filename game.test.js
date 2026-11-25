@@ -4,7 +4,7 @@ const PORT = 3900 + Math.floor(Math.random() * 90);
 let proc;
 
 beforeAll(async () => {
-  proc = Bun.spawn(['bun', 'server.js'], { cwd: import.meta.dir, env: { ...process.env, PORT: String(PORT) }, stdout: 'ignore', stderr: 'inherit' });
+  proc = Bun.spawn(['bun', 'server.js'], { cwd: import.meta.dir, env: { ...process.env, PORT: String(PORT), SQUIGGLE_HISTORY: `${process.env.TMPDIR || '/tmp'}/squiggle-history-${PORT}.json` }, stdout: 'ignore', stderr: 'inherit' });
   for (let i = 0; i < 50; i++) {
     try { if ((await fetch(`http://127.0.0.1:${PORT}/`)).ok) return; } catch {}
     await Bun.sleep(100);

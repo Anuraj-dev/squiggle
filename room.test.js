@@ -1,8 +1,12 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
-import { clock, onMessage, onClose, rooms } from './game.js';
-import { NEW_WORDS } from './words-new.js';
+import { clock, onMessage, onClose, rooms, setWordHistory } from './game.js';
+import { WordHistory } from './history.js';
+import { DECK_BY_ID, DECK_CATALOG } from './decks.js';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
@@ -32,6 +36,7 @@ beforeEach(() => {
   for (const r of rooms.values()) r.clearTimers();
   rooms.clear();
   timers = [];
+  setWordHistory(new WordHistory());
 });
 
 function sock(name) {
@@ -501,15 +506,30 @@ test('host settings: word choices, hints, difficulty and chaos level', () => {
   expect([t.wordChoices, t.hints, t.difficulty, t.chaos]).toEqual([5, 0, 'mix', 'off']);
 });
 
-test('word set: the host picks the new bank, and unknown sets fall back to legacy', () => {
-  const ctx = setup(2, { customOnly: false, customWords: '', wordSet: 'new', difficulty: 'easy', wordChoices: 5 });
-  expect(ctx.room.settings.wordSet).toBe('new');
+test('decks: host picks decks, cards come from different decks with badges, unknown ids fall back', () => {
+  const ctx = setup(2, { customOnly: false, customWords: '', decks: ['tech', 'dev', 'bogus'], difficulty: 'easy', wordChoices: 2 });
+  expect(ctx.room.settings.decks).toEqual(['tech', 'dev']);
+  expect(ctx.ss[1].state().deckCatalog).toEqual(DECK_CATALOG);
   ctx.ss[0].do('start');
-  const pool = new Set(NEW_WORDS.easy);
-  expect(ctx.room.choices.map((c) => c.word).every((w) => pool.has(w))).toBe(true);
+  expect(ctx.ss[1].state().deckCatalog).toBeNull();
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const choices = drawer.state().choices;
+  expect(choices.map((c) => c.deck.id).sort()).toEqual(['dev', 'tech']);
+  for (const c of choices) {
+    expect(c.diff).toBe('easy');
+    expect(DECK_BY_ID.get(c.deck.id).easy).toContain(c.word);
+    expect(c.deck).toEqual({ id: c.deck.id, name: DECK_BY_ID.get(c.deck.id).name, icon: DECK_BY_ID.get(c.deck.id).icon });
+  }
+  // The chosen word's deck is a public clue during drawing; the word is not.
+  drawer.act('choose', { i: 0 });
+  const g = ctx.ss.find((s) => s !== drawer).state();
+  expect(g.deck).toEqual(choices[0].deck);
+  expect(g.word).toBeNull();
   ctx.room.toLobby();
-  ctx.ss[0].do('settings', { settings: { wordSet: 'bogus' } });
-  expect(ctx.room.settings.wordSet).toBe('legacy');
+  ctx.ss[0].do('settings', { settings: { decks: [] } });
+  expect(ctx.room.settings.decks).toEqual(['everyday', 'tech', 'memes']);
+  ctx.ss[0].do('settings', { settings: { decks: 'tech' } });
+  expect(ctx.room.settings.decks).toEqual(['everyday', 'tech', 'memes']);
 });
 
 test('no-hints chaos reveals nothing; chaos "off" never picks a mode', () => {
@@ -1021,4 +1041,119 @@ test('going back to the lobby clears a host pause', () => {
   expect(ctx.room.state).toBe('lobby');
   expect(ctx.room.hostPaused).toBe(false);
   expect(drawer.state().paused).toBeNull();
+});
+
+test('sentence guesses score; a list containing the answer stays private and spends a Limited attempt', () => {
+  const c = startChallenges(3, null, 'limited'), [a, b] = c.guessers, word = c.room.word;
+  const pa = c.room.players.get(a.id);
+  let ma = a.mark(), mb = b.mark();
+  a.act('chat', { text: `${word} dog car`, requestId: 'list' });
+  expect(a.chats(ma).map((m) => [m.kind, m.text])).toEqual([['close', `“${word} dog car” — try one guess. Not shown to others.`]]);
+  expect(a.out.at(-1)).toMatchObject({ t: 'guess-result', requestId: 'list', accepted: false });
+  expect(b.chats(mb)).toEqual([]);
+  expect(c.room.guessBudget(pa).remaining).toBe(2);
+  a.act('chat', { text: `${word} dog car` }); // repeats stay free
+  expect(c.room.guessBudget(pa).remaining).toBe(2);
+  a.act('chat', { text: 'zzz' }); a.act('chat', { text: 'yyy' });
+  expect(c.room.guessBudget(pa).remaining).toBe(0);
+  ma = a.mark();
+  a.act('chat', { text: `${word} or cow` });
+  expect(a.chats(ma)).toEqual([]);
+  expect(a.since(ma, 'toast')[0].text).toMatch(/Next attempt/);
+  expect(b.chats(mb).map((m) => m.text)).toEqual(['zzz', 'yyy']);
+  b.act('chat', { text: `is it a ${word}?` });
+  expect(c.room.guessed.has(b.id)).toBe(true);
+});
+
+// Deals straight from a lobby room: each call is a new turn one second later.
+function deal(room, n = room.settings.wordChoices, avoid) {
+  room.turnSeq++;
+  now += 1000;
+  return room.pickWords(n, avoid).map((c) => c.word);
+}
+const EIGHT = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
+
+test('word memory: never-seen first, then only the oldest 25%, so a word returns after 75% of its pool', () => {
+  const { room } = setup(2, { customWords: EIGHT.join(','), wordChoices: 1 });
+  const seq = Array.from({ length: 48 }, () => deal(room)[0]);
+  expect(new Set(seq.slice(0, 8)).size).toBe(8);
+  expect(seq.slice(0, 2)).toContain(seq[8]);
+  for (let i = 0; i < seq.length; i++) {
+    const back = seq.indexOf(seq[i], i + 1);
+    if (back > 0) expect(back - i).toBeGreaterThanOrEqual(7);
+  }
+});
+
+test('family cooldown skips shared content words, then relaxes to the window, then to anything', () => {
+  const { room } = setup(2, { customWords: 'golf ball', wordChoices: 1 });
+  expect(deal(room)).toEqual(['golf ball']);
+  room.settings.customWords = ['golf ball', 'golf carts', 'golf club', 'apple', 'banana', 'cherry', 'mango', 'lemon'];
+  const at = (oldest) => {
+    room.customSeen = new Map(room.settings.customWords.map((w) => [w, now]));
+    oldest.forEach((w, i) => room.customSeen.set(w, i + 1));
+  };
+  // Window = two oldest; "golf carts" shares "golf" with last turn's card.
+  at(['golf carts', 'apple']);
+  expect(deal(room)).toEqual(['apple']);
+  // Both window words are golf: the cooldown gives way before the window does.
+  at(['golf carts', 'golf club']);
+  expect(['golf carts', 'golf club']).toContain(deal(room)[0]);
+  // Five cards from a window of two: the rest come from anywhere, all distinct.
+  at(['banana', 'cherry']);
+  const five = deal(room, 5);
+  expect(new Set(five).size).toBe(5);
+  expect(five).toEqual(expect.arrayContaining(['banana', 'cherry']));
+});
+
+test('custom words are one card per deal, rotate by recency and are never written to disk', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'squiggle-room-')), 'h.json');
+  const history = new WordHistory({ path, valid: null, delay: 1e9 });
+  setWordHistory(history);
+  const custom = ['my secret sam', 'inside joke', 'aunt rita', 'lucky sock'];
+  const ctx = setup(2, { customOnly: false, customWords: custom.join(','), wordChoices: 3 });
+  ctx.ss[0].do('start');
+  const drawer = ctx.ss.find((s) => s.id === ctx.room.drawerId);
+  const first = ctx.room.choices.map((c) => c.word);
+  drawer.act('reroll');
+  const rerolled = ctx.room.choices.map((c) => c.word);
+  const shown = [], counts = new Map();
+  for (let i = 0; i < 200; i++) {
+    const cards = deal(ctx.room).filter((w) => custom.includes(w));
+    expect(cards.length).toBeLessThanOrEqual(1);
+    for (const w of cards) { shown.push(w); counts.set(w, (counts.get(w) || 0) + 1); }
+  }
+  // Each custom word comes back only after the other three: an even rotation,
+  // not the old "same unpicked custom word on ~87.5% of turns".
+  for (let i = 4; i < shown.length; i++) expect(shown.slice(i - 3, i)).not.toContain(shown[i]);
+  for (const w of custom) expect(counts.get(w) / 200).toBeLessThan(0.25);
+  history.flush();
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, w)).toBe(!custom.includes(w));
+  for (const w of custom) expect(saved).not.toHaveProperty(w);
+  expect(Object.keys(saved).length).toBeGreaterThan(10);
+});
+
+test('word memory survives a rematch and dealt cards come in shuffled order', () => {
+  const ctx = setup(2, { customWords: EIGHT.join(','), wordChoices: 1 });
+  ctx.ss[0].do('start');
+  const firstGame = ctx.room.choices[0].word;
+  ctx.room.toLobby();
+  ctx.ss[0].do('start');
+  expect(ctx.room.choices[0].word).not.toBe(firstGame);
+  expect(ctx.room.customSeen.has(firstGame)).toBe(true);
+
+  const mix = setup(2, { customOnly: false, customWords: '', wordChoices: 3 }).room;
+  const DIFFS = ['easy', 'medium', 'hard'];
+  let unsorted = false, sameTier = false;
+  const firstDeck = new Set();
+  for (let i = 0; i < 40; i++) {
+    const cards = mix.pickWords(3);
+    expect(new Set(cards.map((c) => c.deck.id)).size).toBe(3);
+    firstDeck.add(cards[0].deck.id);
+    const d = cards.map((c) => DIFFS.indexOf(c.diff));
+    if (d.some((x, k) => k && x < d[k - 1])) unsorted = true;
+    if (new Set(d).size < 3) sameTier = true;
+  }
+  expect(unsorted && sameTier).toBe(true);
+  expect(firstDeck.size).toBe(3);
 });

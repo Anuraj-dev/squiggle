@@ -1,0 +1,9 @@
+{
+  "id": "science",
+  "name": "Science & Space",
+  "icon": "🔭",
+  "easy": ["comet tail", "lab rat", "rocket launch pad"],
+  "medium": ["mars rover", "dna helix", "petri dish colony"],
+  "hard": ["schrodingers cat", "particle collider", "big bang"],
+  "aliases": { "dna strand": "dna helix" }
+}
