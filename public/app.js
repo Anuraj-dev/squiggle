@@ -1377,7 +1377,7 @@ function syncVotes(modal) {
       return h('button', { class: 'mvp-card', type: 'button', 'aria-label': `Replay MVP drawing of ${g.word}`, onclick: (e) => openLightbox(g, e.currentTarget) },
         cv, h('span', { class: 'w', text: g.word }), h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'} · ${votes} vote${votes === 1 ? '' : 's'}` }));
     })));
-  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || []);
+  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
 }
 
 // The end screen has no "dismiss" — Esc must not strand players behind it.
