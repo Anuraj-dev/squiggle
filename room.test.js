@@ -708,14 +708,16 @@ test('straight lines, stamps and forbidden zones are enforced on authoritative s
   expect(c.room.strokes[0].tool).toBe('line');
   c.room.chaos = tw('stamps');
   c.drawer.act('stroke', { s: { ...pen('stamp', [0, 0, 0, 0]), tool: 'stamp', shape: 'star', size: 80 } });
-  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'star', pts: [0, 0, 80, 80], size: 4 });
+  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'star', pts: [0, 40, 80, 40], size: 4 });
+  c.drawer.act('stroke', { s: { ...pen('heart', [100, 100, 200, 140]), tool: 'stamp', shape: 'heart', size: 10 } });
+  expect(c.room.strokes.at(-1)).toMatchObject({ tool: 'stamp', shape: 'heart', size: 4 });
   c.drawer.act('stroke', { s: { ...pen('bad', [0, 0, 0, 0]), tool: 'stamp', shape: 'unknown' } });
-  expect(c.room.strokes).toHaveLength(2);
+  expect(c.room.strokes).toHaveLength(3);
   c.room.chaos = tw('forbidden');
   c.drawer.act('stroke', { s: { ...pen('zone', [0, 300, 999, 300]), forbidden: { x: 0, y: 0, w: 1000, h: 750 } } });
   expect(c.room.strokes.at(-1).forbidden).toEqual(forbiddenZone(7));
   c.drawer.act('stroke', { s: { ...pen('fill', [1, 1]), tool: 'fill' } });
-  expect(c.room.strokes).toHaveLength(3);
+  expect(c.room.strokes).toHaveLength(4);
 });
 
 test('shrinking brush uses unpaused original turn time and slippery points follow packet tails', () => {
@@ -843,7 +845,7 @@ test('host-picked challenges: only they roll, one-sided picks follow the preset,
 });
 
 test('only the host in the lobby can change the challenge list; unknown ids are dropped; omitting it keeps it', () => {
-  const ctx = setup(2, { chaosIds: ['mirror', 'bogus', 'fog'] });
+  const ctx = setup(2, { chaosIds: ['mirror', 'laggy', 'bogus', 'fog'] });
   expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
   ctx.ss[1].do('settings', { settings: { chaosIds: [] } });
   expect(ctx.room.settings.chaosIds).toEqual(['mirror', 'fog']);
@@ -1021,4 +1023,51 @@ test('going back to the lobby clears a host pause', () => {
   expect(ctx.room.state).toBe('lobby');
   expect(ctx.room.hostPaused).toBe(false);
   expect(drawer.state().paused).toBeNull();
+});
+
+test('decoy doodle adds seeded strokes from frame 1 that survive undo, redo and clear while artist strokes undo/redo normally', () => {
+  const c = startChallenges(3, 'decoy', null);
+  const decoys = c.room.strokes.filter((s) => s.decoy);
+  expect(decoys.length).toBeGreaterThanOrEqual(1);
+  expect(decoys.length).toBeLessThanOrEqual(2);
+  for (const g of c.guessers) {
+    expect(g.out.findLast((m) => m.t === 'clear').strokes).toEqual(decoys);
+  }
+  const n0 = decoys.length;
+  // Artist cannot undo decoy strokes, even before drawing anything.
+  c.drawer.act('undo');
+  expect(c.room.strokes).toHaveLength(n0);
+  // Artist strokes undo and redo normally without touching decoys.
+  c.drawer.act('stroke', { s: pen('a1', [10, 10, 20, 20]) });
+  c.drawer.act('stroke', { s: pen('a2', [30, 30, 40, 40]) });
+  expect(c.room.strokes).toHaveLength(n0 + 2);
+  c.drawer.act('undo');
+  expect(c.room.strokes).toHaveLength(n0 + 1);
+  c.drawer.act('redo');
+  expect(c.room.strokes).toHaveLength(n0 + 2);
+  c.drawer.act('undo');
+  c.drawer.act('undo');
+  c.drawer.act('undo');
+  expect(c.room.strokes).toEqual(decoys);
+  // Redo still restores artist stroke after hitting the decoy floor; clear wipes artist strokes and redo stack, keeping decoys.
+  c.drawer.act('redo');
+  expect(c.room.strokes).toHaveLength(n0 + 1);
+  c.drawer.act('clear');
+  expect(c.room.strokes).toEqual(decoys);
+  for (const g of c.guessers) expect(g.out.findLast((m) => m.t === 'clear').strokes).toEqual(decoys);
+  c.drawer.act('redo');
+  expect(c.room.strokes).toEqual(decoys);
+  // Gallery includes the decoy strokes.
+  c.drawer.act('skip');
+  expect(c.room.gallery.at(-1).strokes).toEqual(decoys);
+});
+
+test('gravity ink records turn endMs on reveal and gallery for deterministic rendering', () => {
+  const c = startChallenges(2, 'gravity', null);
+  c.drawer.act('stroke', { s: pen('g1', [50, 50, 100, 50]) });
+  expect(c.room.strokes[0].gravity).toBe(true);
+  advance(12345);
+  c.drawer.act('skip');
+  expect(c.room.reveal.endMs).toBe(12345);
+  expect(c.room.gallery.at(-1).endMs).toBe(12345);
 });

@@ -7,7 +7,7 @@ import {
   CHOOSE_MS, REVEAL_MS, MAX_STROKES, MAX_STROKE_PTS, MAX_TURN_COORDS,
   MAX_GALLERY, LOBBY_GRACE, GAME_GRACE, SPEEDUP_LEFT,
   CHAOS_LEVELS, CHAOS_RATE, CHAOS_POOLS, CHAOS_MODES, CHAOS_IDS, cleanChaosIds, INK_BUDGET, STROKE_BUDGET, inkCost, trimInk, turnProgress, RELIEF_AT,
-  stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
+  stampBounds, forbiddenZone, shrinkingSize, slipperyPts, decoyStrokes,
   clamp, clean, norm, lev, shuffleIn, pickChaos, is, canUndo,
   guesserPts, drawerPts, allBonus, scoreMult, tiedRanking,
   strokeId, validateStroke, validatePts, galleryStrokes, jitterPts, allowedTool, applyChaos,
@@ -497,6 +497,12 @@ export class Room {
     if (!c) return this.nextTurn();
     this.beginPhase('drawing');
     this.resetCanvas();
+    if (is(this.chaos, 'decoy')) {
+      const decoys = decoyStrokes(this.chaos.seed);
+      this.strokes.push(...decoys);
+      this.coordCount = decoys.reduce((n, s) => n + s.pts.length, 0);
+      this.publishedStrokes = decoys.map((s) => ({ ...s, pts: [...s.pts] }));
+    }
     this.inkUsed = 0;
     this.strokeUsed = 0;
     this.guessBudgets.clear();
@@ -517,7 +523,7 @@ export class Room {
     this.hintPlan = shuffle(letters).slice(0, Math.min(hints, Math.floor(letters.length / 2)));
     this.scheduleHints();
     this.system(`✏️ ${this.players.get(this.drawerId).name} is drawing`, 'turn');
-    this.broadcast('clear', { seq: this.turnSeq, strokes: [] });
+    this.broadcast('clear', { seq: this.turnSeq, strokes: this.strokes });
     this.updatePause();
   }
 
@@ -617,12 +623,13 @@ export class Room {
     if (this.state !== 'drawing' && this.state !== 'choosing') return;
     if (!this.word) return this.nextTurn();
     const drawer = this.players.get(this.drawerId);
+    const endMs = this.clockMs();
     this.beginPhase('reveal');
     if (is(this.guesserChaos, 'batches')) { this.batchReleased = true; this.publishCanvas(); }
     this.awardDrawer();
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
     if (this.strokes.length) this.gallery.push({
-      word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos,
+      word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos, endMs,
       drawer: drawer ? { id: drawer.id, name: drawer.name, avatar: drawer.avatar, color: drawer.color } : null,
     });
     for (const id of this.turnEligible) {
@@ -633,7 +640,7 @@ export class Room {
     if (drawer) deltas.unshift({ id: drawer.id, name: drawer.name, pts: this.drawerAward, drawer: true });
     const modes = [this.chaos, this.guesserChaos].filter(Boolean);
     this.reveal = {
-      word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos,
+      word: this.word, reason, deltas, artistChaos: this.chaos, guesserChaos: this.guesserChaos, endMs,
       diff: this.diff, mult: Math.round(scoreMult(this.diff, modes) * 100) / 100,
       allBonus: reason === 'all' ? allBonus(this.diff, modes) : 0,
     };
@@ -882,7 +889,7 @@ const handlers = {
   undo(room, p, m) {
     if (!room.drawGate(p, m)) return;
     if (room.state === 'drawing' && !canUndo(room.chaos)) return room.rejectDraw(p, 'locked');
-    const idx = room.strokes.findLastIndex((x) => x.by === p.id);
+    const idx = room.strokes.findLastIndex((x) => x.by === p.id && !x.decoy);
     if (idx < 0) return;
     const [s] = room.strokes.splice(idx, 1);
     room.coordCount -= s.pts.length;
@@ -906,8 +913,14 @@ const handlers = {
     const lobby = room.state === 'lobby';
     if (lobby ? p.id !== room.hostId : !canUndo(room.chaos)) return;
     if (!room.drawGate(p, m)) return;
+    const kept = lobby ? [] : room.strokes.filter((x) => x.decoy);
     room.resetCanvas(!room.batching());
-    room.broadcastDraw('clear', { seq: room.turnSeq, strokes: [] });
+    if (kept.length) {
+      room.strokes.push(...kept);
+      room.coordCount = kept.reduce((n, x) => n + x.pts.length, 0);
+      if (!room.batching()) room.publishedStrokes = kept.map((s) => ({ ...s, pts: [...s.pts] }));
+    }
+    room.broadcastDraw('clear', { seq: room.turnSeq, strokes: kept });
   },
 
   chat(room, p, m) {

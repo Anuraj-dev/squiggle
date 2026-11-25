@@ -12,7 +12,7 @@ export const GALLERY_COORDS = 24000;
 export const LOBBY_GRACE = 20000, GAME_GRACE = 120000;
 export const SPEEDUP_LEFT = 25000;
 export const TOOLS = new Set(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']);
-export const STAMP_SHAPES = ['circle', 'triangle', 'square', 'arrow', 'star'];
+export const STAMP_SHAPES = ['circle', 'triangle', 'square', 'arrow', 'star', 'heart', 'moon', 'cloud', 'bolt', 'eye'];
 export const JITTER = 7;
 export const INK_BUDGET = 6000, STROKE_BUDGET = 5;
 
@@ -41,9 +41,8 @@ export const CHAOS_MODES = [
   { id: 'fog', icon: '🌫️', name: 'Foggy Glasses', desc: 'Guessers see a blur that slowly clears', view: true },
   { id: 'quake', icon: '🌋', name: 'Earthquake', desc: 'The guessers’ screen won’t stop shaking', view: true },
   { id: 'spin', icon: '🎠', name: 'Merry-Go-Round', desc: 'The canvas slowly spins for guessers', view: true },
-  { id: 'negative', icon: '🌚', name: 'Negative', desc: 'Guessers see inverted colors', view: true },
+  { id: 'negative', icon: '🌗', name: 'Opposite Colors', desc: 'Guessers see every ink color flipped.', view: true },
   { id: 'pixel', icon: '👾', name: '8-Bit', desc: 'Guessers see chunky pixels', view: true },
-  { id: 'laggy', icon: '🐌', name: 'Laggy Stream', desc: 'Strokes arrive late, then catch up.', view: true },
   { id: 'fivestrokes', icon: '✋', name: 'Five Strokes', desc: "Five pen strokes. Undo and clear don't restore them." },
   { id: 'inkbudget', icon: '🖋️', name: 'Ink Budget', desc: "Erasing uses ink. Undo and clear don't refill it.", mild: true },
   { id: 'mystery', icon: '❓', name: 'Mystery Length', desc: 'Word length appears halfway through.', view: true, mild: true },
@@ -54,15 +53,18 @@ export const CHAOS_MODES = [
   { id: 'slippery', icon: '🧊', name: 'Slippery Pen', desc: 'Your pen trails behind your hand.', mild: true },
   { id: 'puzzle', icon: '🧩', name: 'Puzzle Board', desc: 'Tiles return to place as time passes.', view: true },
   { id: 'spotlight', icon: '🔦', name: 'Moving Spotlight', desc: 'A moving window opens onto the drawing.', view: true },
-  { id: 'batches', icon: '📬', name: 'Ink in Batches', desc: 'The drawing updates every two seconds.', view: true, mild: true },
+  { id: 'batches', icon: '🐌', name: 'Laggy Stream', desc: 'The drawing reaches you in bursts.', view: true, mild: true },
   { id: 'limited', icon: '🎯', name: 'Limited Guesses', desc: 'Three attempts. One returns every four seconds. Typos are free.', view: true },
+  { id: 'gravity', icon: '🫠', name: 'Gravity Ink', desc: 'Everything you draw slowly slides down.' },
+  { id: 'decoy', icon: '🪱', name: 'Decoy Doodle', desc: 'Start from a scribble you can’t erase.' },
+  { id: 'macro', icon: '🔍', name: 'Macro Cam', desc: 'Guessers see a zoomed-in patch that pulls back.', view: true },
 ].map((mode) => ({ ...mode, target: mode.view || mode.id === 'nohints' ? 'guesser' : 'artist',
   mild: mode.mild || ['tiny', 'rainbow', 'onecolor', 'dotted'].includes(mode.id) }));
 // Chaos rate: chance a turn is a chaos turn. 1x is the baseline (about 1 turn in 4); each step multiplies it, so 4x is every turn.
 export const CHAOS_RATE = { x1: 0.25, x2: 0.5, x3: 0.75, x4: 1 };
 export const CHAOS_LEVELS = ['off', ...Object.keys(CHAOS_RATE)];
 export const CHAOS_POOLS = ['artist', 'guesser', 'mixed'];
-export const LAG_MS = 4000, MEMORY_STROKES = 4;
+export const MEMORY_STROKES = 4, GRAVITY_PX_PER_SEC = 10;
 // Saturated inks for One Color / Mystery Ink.
 export const INKS = ['#e8322a', '#ff7a2f', '#1f9d55', '#2ec4d6', '#3d7bff', '#9b6bff', '#ff4fa3', '#8a4b2a'];
 
@@ -104,20 +106,136 @@ export function forbiddenZone(seed = 0) {
 }
 export const shrinkingSize = (elapsed, scoreLen) => Math.round(22 - 18 * Math.min(1, Math.max(0, elapsed / (scoreLen || 1))));
 
-// Preserve drag direction for arrows, keep taps visible, and keep stamps on paper.
+// Derive size and rotation from the drag vector, keep taps upright at default
+// size, and shift so even a rotated stamp stays on paper.
 export function stampBounds(pts, shape) {
   let [x1, y1, x2, y2] = pts;
-  if (Math.hypot(x2 - x1, y2 - y1) < 2) {
-    x1 -= 40; y1 -= 40; x2 = x1 + 80; y2 = y1 + 80;
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+  let s;
+  if (len < 2) {
+    s = 80;
+    x1 = x1 - s / 2;
+    x2 = x1 + s;
+    y2 = y1;
   } else {
-    const equal = shape === 'circle' || shape === 'square';
-    const side = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-    x2 = x1 + (x2 < x1 ? -1 : 1) * Math.min(240, Math.max(30, equal ? side : Math.abs(x2 - x1)));
-    y2 = y1 + (y2 < y1 ? -1 : 1) * Math.min(240, Math.max(30, equal ? side : Math.abs(y2 - y1)));
+    s = Math.min(240, Math.max(30, len));
+    const scale = s / len;
+    x2 = x1 + dx * scale;
+    y2 = y1 + dy * scale;
   }
-  const dx = Math.max(0, -Math.min(x1, x2)) - Math.max(0, Math.max(x1, x2) - (W - 1));
-  const dy = Math.max(0, -Math.min(y1, y2)) - Math.max(0, Math.max(y1, y2) - (H - 1));
-  return [x1 + dx, y1 + dy, x2 + dx, y2 + dy];
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+  const ux = (x2 - x1) / s, uy = (y2 - y1) / s;
+  const pad = Math.ceil(shape === 'circle' ? s / 2 : (s / 2) * (Math.abs(ux) + Math.abs(uy)));
+  const sx = Math.ceil(Math.max(0, pad - cx)) - Math.ceil(Math.max(0, cx + pad - (W - 1)));
+  const sy = Math.ceil(Math.max(0, pad - cy)) - Math.ceil(Math.max(0, cy + pad - (H - 1)));
+  return [x1 + sx, y1 + sy, x2 + sx, y2 + sy].map(Math.round);
+}
+
+// Rotate a #rrggbb color's hue by 180° * strength while keeping lightness and
+// saturation intact, so black/white/grays and the paper stay unchanged.
+export function rotateHue(hex, strength = 1) {
+  if (!strength || strength <= 0 || !/^#[0-9a-f]{6}$/i.test(hex)) return hex;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (d === 0) return hex;
+  const l = (max + min) / 2;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h / 6 + 0.5 * Math.min(1, strength)) % 1;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const chan = (t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const byte = (v) => Math.round(v * 255).toString(16).padStart(2, '0');
+  return `#${byte(chan(h + 1 / 3))}${byte(chan(h))}${byte(chan(h - 1 / 3))}`;
+}
+
+export function strokeMaxY(s) {
+  const p = s?.pts;
+  if (!p?.length) return 0;
+  if (s.tool === 'stamp' && p.length >= 4) {
+    const [x1, y1, x2, y2] = p;
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+    if (!len) return Math.min(H - 1, Math.max(0, y1));
+    const pad = s.shape === 'circle' ? len / 2 : (len / 2) * (Math.abs(dx / len) + Math.abs(dy / len));
+    return Math.min(H - 1, Math.max(0, (y1 + y2) / 2 + pad));
+  }
+  let maxY = 0;
+  for (let i = 1; i < p.length; i += 2) if (p[i] > maxY) maxY = p[i];
+  return Math.min(H - 1, maxY);
+}
+
+// Downward pixel offset for Gravity Ink, capped so strokes remain on paper.
+export function gravityOffset(ageMs, maxY = 0) {
+  const raw = Math.max(0, ageMs || 0) * GRAVITY_PX_PER_SEC / 1000;
+  const cap = Math.max(0, H - 1 - Math.min(H - 1, Math.max(0, maxY)));
+  return Math.min(cap, raw);
+}
+
+// Deterministic 1–2 seeded scribble strokes for Decoy Doodle.
+export function decoyStrokes(seed = 0) {
+  let state = Math.imul((seed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) >>> 0 || 1;
+  const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 0x100000000; };
+  next(); next();
+  const count = next() < 0.5 ? 1 : 2;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    let x = 180 + next() * (W - 360);
+    let y = 140 + next() * (H - 280);
+    let ang = next() * Math.PI * 2;
+    let turn = (next() < 0.5 ? 1 : -1) * (0.35 + next() * 0.45);
+    const pts = [Math.round(x), Math.round(y)];
+    const steps = 8 + Math.floor(next() * 5);
+    for (let k = 0; k < steps; k++) {
+      ang += turn + (next() - 0.5) * 0.5;
+      if (next() < 0.25) turn = -turn;
+      const step = 30 + next() * 35;
+      x = Math.min(W - 80, Math.max(80, x + Math.cos(ang) * step));
+      y = Math.min(H - 80, Math.max(80, y + Math.sin(ang) * step));
+      pts.push(Math.round(x), Math.round(y));
+    }
+    out.push({ id: `decoy:${i}`, by: null, tool: 'pen', color: '#1d1b1a', size: 10, pts, t: 0, decoy: true });
+  }
+  return out;
+}
+
+export function recentInkCenter(strokes) {
+  for (let i = (strokes?.length || 0) - 1; i >= 0; i--) {
+    const s = strokes[i];
+    if (!s || s.tool === 'eraser' || !s.pts?.length) continue;
+    const p = s.pts.slice(-24);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let j = 0; j < p.length; j += 2) {
+      if (p[j] < minX) minX = p[j]; if (p[j] > maxX) maxX = p[j];
+      if (p[j + 1] < minY) minY = p[j + 1]; if (p[j + 1] > maxY) maxY = p[j + 1];
+    }
+    const cx = (minX + maxX) / 2;
+    let cy = (minY + maxY) / 2;
+    if (s.squish) cy = cy * 0.5 + H / 4;
+    if (s.flipY) cy = H - cy;
+    return { x: cx, y: cy };
+  }
+  return { x: W / 2, y: H / 2 };
+}
+
+// Zooms 2.5x around `focus` at full strength, easing back to 1x at 0,
+// clamped so the zoomed viewport never exposes outside the paper.
+export function macroView(focus, amount) {
+  if (!amount || amount <= 0) return { zoom: 1, tx: 0, ty: 0 };
+  const zoom = 1 + 1.5 * Math.min(1, amount);
+  const u = Math.min(1, Math.max(0, (focus?.x ?? W / 2) / W));
+  const v = Math.min(1, Math.max(0, (focus?.y ?? H / 2) / H));
+  const lim = (zoom - 1) / 2;
+  const clampLim = (val) => Math.max(-lim, Math.min(lim, val));
+  return { zoom, tx: clampLim(zoom * (0.5 - u)), ty: clampLim(zoom * (0.5 - v)) };
 }
 
 // Packet boundaries must not change the path: carry the last rendered point.
@@ -341,7 +459,7 @@ export function applyChaos(out, chaos) {
   if (is(chaos, 'onecolor') && ink) out.color = INKS[(chaos.seed >>> 3) % INKS.length];
   if (is(chaos, 'randomink') && ink) out.color = INKS[hashStr(String(out.id)) % INKS.length];
   if (is(chaos, 'rainbow') && ink) out.rainbow = true;
-  for (const [id, flag] of [['mirror', 'mirror'], ['kaleido', 'kaleido'], ['upside', 'flipY'], ['squish', 'squish'], ['double', 'double']]) {
+  for (const [id, flag] of [['mirror', 'mirror'], ['kaleido', 'kaleido'], ['upside', 'flipY'], ['squish', 'squish'], ['double', 'double'], ['gravity', 'gravity']]) {
     if (is(chaos, id)) out[flag] = true;
   }
   if (is(chaos, 'dotted') && out.tool !== 'fill') out.dotted = true;
