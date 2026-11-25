@@ -5,7 +5,7 @@ import {
   guesserPts, drawerPts, allBonus, scoreMult, timeFrac, tiedRanking, podiumGroups,
   allowedTool, canUndo, fadeAlpha, galleryStrokes, clientClock, jitter, jitterPts,
   inkCost, trimInk, turnProgress, viewStrength, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
-  rotateHue, gravityOffset, strokeMaxY, decoyStrokes, recentInkCenter, macroView,
+  gravityOffset, strokeMaxY, decoyStrokes, recentInkCenter, macroView,
 } from './public/shared.js';
 
 test('stamp shapes and bounds are validated without enabling stamps in ordinary turns', () => {
@@ -299,16 +299,6 @@ test('cleanChaosIds keeps known ids in canonical order and treats non-lists as e
   expect(cleanChaosIds([])).toEqual([]);
   expect(cleanChaosIds(undefined)).toEqual(CHAOS_IDS);
   expect(cleanChaosIds('fog')).toEqual(CHAOS_IDS);
-});
-
-test('rotateHue flips ink hue without turning grays or mid-fades gray', () => {
-  expect(rotateHue('#ff0000', 1)).toBe('#00ffff');
-  expect(rotateHue('#00ff00', 1)).toBe('#ff00ff');
-  expect(rotateHue('#000000', 1)).toBe('#000000');
-  expect(rotateHue('#ffffff', 1)).toBe('#ffffff');
-  expect(rotateHue('#777777', 1)).toBe('#777777');
-  expect(rotateHue('#ff0000', 0)).toBe('#ff0000');
-  expect(rotateHue('#ff0000', 0.5)).toBe('#80ff00');
 });
 
 test('gravityOffset slides at 10 px/s and caps so strokes stay on paper', () => {

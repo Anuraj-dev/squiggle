@@ -411,13 +411,12 @@ const strength = () => {
 };
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || liveChaos('gravity') || guesserView('negative') || guesserView('pixel') || guesserView('puzzle');
+const timed = () => fading() || liveChaos('gravity') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
   chaos: S?.chaos,
   gameMs: S?.state === 'reveal' ? (S.reveal?.endMs ?? 0) : gameMs(),
   fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  hueFlip: guesserView('negative') ? strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
@@ -1401,6 +1400,9 @@ function paintGuesserView(now) {
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const filters = [];
   if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
+  // Opposite Colors: the board stays true-colour (so fills match the artist's)
+  // and only the guesser's canvas element is hue-rotated; paper and grays stay put.
+  if (guesserView('negative') && amount > 0) filters.push(`hue-rotate(${(180 * amount).toFixed(1)}deg)`);
   board.style.filter = filters.join(' ');
   if (!guesserView('macro')) {
     board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
