@@ -265,6 +265,7 @@ export function recordSegments(segments, { onProgress = () => {}, signal, fps = 
     try {
       const [cv, ctx] = paperCanvas();
       segments[0]?.paint(ctx, 0);
+      if (done) return; // the first paint may have cancelled
       stream = cv.captureStream(fps);
       rec = new MediaRecorder(stream, { mimeType: picked.mime, videoBitsPerSecond: 4e6 });
       const total = segments.reduce((n, s) => n + s.ms, 0);
