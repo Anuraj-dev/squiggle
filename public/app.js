@@ -1169,12 +1169,20 @@ function recorder(label, title, job, until) {
     const cancel = h('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => ctl.abort() });
     fill(wrap, h('span', { class: 'rec-label', text: '🎬 Recording' }), bar, pct, cancel);
     cancel.focus();
+    // Chrome fires a dialog's `close` event on its next rendered frame, which a
+    // background window may not paint for seconds while the recorder's timers keep
+    // running. So check the dialog itself rather than wait for `until`.
+    const gone = () => !wrap.isConnected || wrap.closest('dialog')?.open === false;
     try {
       const { segments, name } = job();
       const clip = await recordSegments(segments, {
         signal: ctl.signal,
-        onProgress: (f) => { bar.value = f; pct.textContent = `${Math.round(f * 100)}%`; },
+        onProgress: (f) => {
+          if (gone()) return ctl.abort();
+          bar.value = f; pct.textContent = `${Math.round(f * 100)}%`;
+        },
       });
+      if (gone()) ctl.abort();
       ctl.signal.throwIfAborted();
       const filename = name(clip.ext);
       const out = deliverClip(clip, filename);
