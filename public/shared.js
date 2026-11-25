@@ -449,6 +449,9 @@ export function allowedTool(chaos, tool) {
   if (is(chaos, 'fade')) return tool !== 'fill';
   if (is(chaos, 'shapes')) return tool !== 'pen' && tool !== 'eraser';
   if (is(chaos, 'permanent')) return tool !== 'eraser';
+  // Gravity slides each stroke by its own age, so a fill seed or an eraser pass
+  // would drift away from the ink it was aimed at.
+  if (is(chaos, 'gravity')) return tool !== 'fill' && tool !== 'eraser';
   return true;
 }
 

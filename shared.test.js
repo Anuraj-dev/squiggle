@@ -47,6 +47,10 @@ test('new artist restrictions and deterministic drawing parameters are bounded',
     for (const tool of ['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp']) expect(allowedTool({ id }, tool)).toBe(allowed.includes(tool));
   }
   expect(allowedTool({ id: 'forbidden' }, 'fill')).toBe(false);
+  // Gravity Ink: fill and eraser would drift away from their target ink; undo stays.
+  expect(['pen', 'eraser', 'fill', 'line', 'rect', 'ellipse', 'stamp'].filter((t) => allowedTool({ id: 'gravity' }, t)))
+    .toEqual(['pen', 'line', 'rect', 'ellipse']);
+  expect(canUndo({ id: 'gravity' })).toBe(true);
   expect([shrinkingSize(0, 60000), shrinkingSize(30000, 60000), shrinkingSize(90000, 60000)]).toEqual([22, 13, 4]);
   for (const seed of [0, 12, 10000, 0xffffffff]) {
     const z = forbiddenZone(seed);
