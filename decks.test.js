@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { DECKS, DECK_WARNINGS, DECK_IDS, DEFAULT_DECKS, ALL_DECK_KEYS, TIERS, buildDecks, cleanDeckIds } from './decks.js';
-import { WORDS, canonKey, matchesAnswer } from './words.js';
+import { WORDS, canonKey, matchesAnswer, singulars, stripWrapper } from './words.js';
 import { NEW_WORDS } from './words-new.js';
 
 const flat = (k) => k.replace(/ /g, '');
@@ -19,9 +19,20 @@ test('shipped decks load clean: valid answers, one owner per answer, Everyday = 
       const k = flat(canonKey(w));
       expect(owners.get(k)).toBeUndefined();
       owners.set(k, d.id);
-      // No answer in another deck is a plural/alias variant of this one.
-      for (const other of DECKS) if (other !== d) for (const u of TIERS.flatMap((x) => other[x])) {
-        if (matchesAnswer(u, w)) throw new Error(`${other.id} "${u}" matches ${d.id} "${w}"`);
+    }
+  }
+  // No answer in another deck is a plural/alias/wrapper variant of this one.
+  // matchesAnswer(u, w) needs a shared flat key between u (or its unwrapped form)
+  // and w, plural forms included, so only those pairs are checked: O(n), not O(n²).
+  const keysOf = (x) => [x, ...singulars(x)].map((y) => flat(canonKey(y))).filter(Boolean);
+  const byKey = new Map();
+  for (const d of DECKS) for (const w of TIERS.flatMap((t) => d[t])) {
+    for (const k of keysOf(w)) byKey.set(k, [...(byKey.get(k) || []), [d.id, w]]);
+  }
+  for (const d of DECKS) for (const u of TIERS.flatMap((t) => d[t])) {
+    for (const k of new Set([...keysOf(u), ...keysOf(stripWrapper(u))])) {
+      for (const [id, w] of byKey.get(k) || []) {
+        if (id !== d.id && matchesAnswer(u, w)) throw new Error(`${d.id} "${u}" matches ${id} "${w}"`);
       }
     }
   }
