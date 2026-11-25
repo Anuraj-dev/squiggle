@@ -318,7 +318,7 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .toolbar, .reactbar {
   display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; align-items: center; width: 100%; max-width: 1000px;
 }
-.tgroup { display: flex; gap: 0.3rem; align-items: center; background: var(--card); border: var(--line); border-radius: 12px; padding: 0.3rem; box-shadow: var(--shadow-sm); }
+.tgroup { display: flex; gap: 0.3rem; flex-wrap: wrap; justify-content: center; align-items: center; max-width: 100%; background: var(--card); border: var(--line); border-radius: 12px; padding: 0.3rem; box-shadow: var(--shadow-sm); }
 .tgroup.disabled { opacity: 0.35; }
 .tgroup.disabled .tbtn, .tbtn:disabled { pointer-events: none; cursor: not-allowed; opacity: 0.55; }
 .tbtn { width: 34px; height: 34px; border-radius: 8px; border: 2px solid transparent; background: none; display: grid; place-items: center; padding: 0; }

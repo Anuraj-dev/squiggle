@@ -144,7 +144,7 @@ export async function renderShareCard({ title, ranking, awards, drawings }, make
       c.beginPath(); c.moveTo(x, y + tileH); c.lineTo(x, y + 16); c.arcTo(x, y, x + 16, y, 16);
       c.lineTo(x + tileW - 16, y); c.arcTo(x + tileW, y, x + tileW, y + 16, 16); c.lineTo(x + tileW, y + tileH); c.closePath(); c.clip();
       c.translate(x, y);
-      paintThumb(c, tileW, tileH, d.strokes || []);
+      paintThumb(c, tileW, tileH, d.strokes || [], d.endMs != null ? { gameMs: d.endMs } : {});
       c.restore();
       c.fillStyle = INK; c.fillRect(x, y + tileH, tileW, 4);
       c.lineWidth = 4; c.strokeStyle = INK; rrect(c, x, y, tileW, rowH, 16); c.stroke();

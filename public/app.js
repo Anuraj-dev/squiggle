@@ -1,7 +1,7 @@
 // Squiggle client: one module, no build step.
-import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, LAG_MS, MEMORY_STROKES,
+import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, MEMORY_STROKES,
   INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
-  scoreMult, DIFF_MULT } from './shared.js';
+  recentInkCenter, macroView, scoreMult, DIFF_MULT } from './shared.js';
 import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { renderShareCard } from './share.js';
 import { createMusic } from './music.js';
@@ -40,6 +40,11 @@ const ICONS = {
   square: '<rect x="4" y="4" width="16" height="16"/>',
   arrow: '<path d="M3 9H14V4L22 12L14 20V15H3Z"/>',
   star: '<path d="M12 2L15 8L22 9L17 14L18 21L12 18L6 21L7 14L2 9L9 8Z"/>',
+  heart: '<path d="M12 20s-7-4.6-9-9a5 5 0 019-3 5 5 0 019 3c-2 4.4-9 9-9 9z"/>',
+  moon: '<path d="M20 14.5A8 8 0 119.5 4a6.5 6.5 0 0010.5 10.5z"/>',
+  cloud: '<path d="M6.5 18h11a4 4 0 00.7-7.9A5.5 5.5 0 007.5 8.5 4.5 4.5 0 006.5 18z"/>',
+  bolt: '<path d="M13 2L5 13h6l-1 9 9-12h-6z"/>',
+  eye: '<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>',
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>',
   eraser: '<path d="M8 20h12"/><path d="M4 15l9-9 6 6-7 7H8z"/><path d="M9 10l6 6"/>',
   fill: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c0 2 1 3 1 4a1.5 1.5 0 01-3 0c0-1 1-2 2-4z"/>',
@@ -405,11 +410,13 @@ const strength = () => {
 };
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || guesserView('laggy') || guesserView('pixel') || guesserView('puzzle');
+const timed = () => fading() || liveChaos('gravity') || guesserView('negative') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
-  chaos: S?.chaos, gameMs: gameMs(), fade: fading(),
+  chaos: S?.chaos,
+  gameMs: S?.state === 'reveal' ? (S.reveal?.endMs ?? 0) : gameMs(),
+  fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  lagMs: guesserView('laggy') ? LAG_MS * strength() : 0,
+  hueFlip: guesserView('negative') ? strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
@@ -455,7 +462,7 @@ function present() {
 }
 // Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel') || (s.tool === 'eraser' && strokes.some((x) => x.decoy))) markDirty();
   else drawStroke(ctx, s, from, renderOpts());
 }
 
@@ -568,6 +575,7 @@ function endPointer(e) {
     shape = null;
     const [x1, y1, x2, y2] = s.pts;
     if (s.tool === 'stamp' || Math.abs(x2 - x1) + Math.abs(y2 - y1) > 3) {
+      s.t = gameMs();
       act('stroke', { s });
       s.pts = s.tool === 'stamp' ? stampBounds(s.pts, s.shape) : shown(s, s.pts);
       strokes.push(s); drawLive(s, 0);
@@ -1100,7 +1108,7 @@ $('#chatForm').onsubmit = (e) => {
 
 function fullPng(g) {
   const cv = h('canvas', { width: W, height: H });
-  paintPaper(cv.getContext('2d', { willReadFrequently: true }), g.strokes || []);
+  paintPaper(cv.getContext('2d', { willReadFrequently: true }), g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
   return cv;
 }
 
@@ -1111,7 +1119,7 @@ function queueThumbs(items) {
   const next = () => {
     if (job !== thumbJob || !items.length) return;
     const [cv, g] = items.shift();
-    paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || []);
+    paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
     setTimeout(next, 0);
   };
   next();
@@ -1204,7 +1212,7 @@ function renderEnd(fresh) {
           cancel: 'Stay a little longer',
         }) }),
       h('button', { class: 'btn big', name: 'share', text: '📸 Save results image', title: 'Leaderboard and every drawing in one picture',
-        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes })) }) }),
+        onclick: (e) => saveResultsImage(e.currentTarget, { title, ranking, awards, drawings: gallery.map((g) => ({ word: g.word, by: byline(g), strokes: g.strokes, endMs: g.endMs })) }) }),
       h('button', { class: 'btn big', text: '🔗 Invite more friends', onclick: copyInvite }),
       h('p', { class: 'muted', name: 'waitHost', hidden: host, text: 'The host can take everyone back to the lobby for another game.' }))));
   if (!modal.open) modal.showModal();
@@ -1218,6 +1226,21 @@ $('#endModal').addEventListener('cancel', (e) => e.preventDefault());
 
 let lastSec = -1;
 let lastView = 0;
+let macroCam = { x: W / 2, y: H / 2, seq: -1, at: 0 };
+function updateMacro(now) {
+  if (!guesserView('macro')) return;
+  const amount = strength();
+  if (amount <= 0) { board.style.transform = ''; return; }
+  if (macroCam.seq !== S.seq) macroCam = { x: W / 2, y: H / 2, seq: S.seq, at: now };
+  const dt = S.paused ? 0 : Math.min(0.05, Math.max(0, (now - macroCam.at) / 1000));
+  macroCam.at = now;
+  const target = recentInkCenter(strokes);
+  const k = 1 - Math.exp(-dt * 4.5);
+  macroCam.x += (target.x - macroCam.x) * k;
+  macroCam.y += (target.y - macroCam.y) * k;
+  const { zoom, tx, ty } = macroView(macroCam, amount);
+  board.style.transform = `translate(${(tx * 100).toFixed(2)}%, ${(ty * 100).toFixed(2)}%) scale(${zoom.toFixed(4)})`;
+}
 function paintGuesserView(now) {
   if (now - lastView < 100) return;
   lastView = now;
@@ -1225,12 +1248,13 @@ function paintGuesserView(now) {
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const filters = [];
   if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
-  if (guesserView('negative')) filters.push(`invert(${amount}) hue-rotate(${180 * amount}deg)`);
   board.style.filter = filters.join(' ');
-  board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
-    ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
-    : guesserView('quake') && !reducedMotion && amount > 0
-      ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  if (!guesserView('macro')) {
+    board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
+      ? `scale(${1 - 0.22 * amount}) rotate(${gameMs() / 14000 * 360 * amount}deg)`
+      : guesserView('quake') && !reducedMotion && amount > 0
+        ? `translate(${Math.sin(gameMs() / 45) * 7 * amount}px, ${Math.cos(gameMs() / 65) * 5 * amount}px)` : '';
+  }
   if (guesserView('spotlight') || liveChaos('forbidden') || liveChaos('shrinking')) drawFx();
 }
 function tick() {
@@ -1238,6 +1262,7 @@ function tick() {
   if (!S) return;
   const now = performance.now();
   paintGuesserView(now);
+  updateMacro(now);
   if (inGame()) {
     const { left } = clientClock(S, stateRecvAt, now);
     const sec = Math.ceil(left / 1000);
