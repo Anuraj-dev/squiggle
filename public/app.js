@@ -746,6 +746,7 @@ function renderOverlay(isDrawer, drawer) {
   const show = !(S.state === 'drawing' || S.state === 'reveal' || S.state === 'end' || (S.state === 'lobby' && lobbyMinimized));
   ov.hidden = !show;
   $('#boardWrap').classList.toggle('expand', show);
+  $('#boardWrap').classList.toggle('settings', show && S.state === 'lobby');
   pill.hidden = !(S.state === 'lobby' && lobbyMinimized);
   if (!show) { overlayKey = key; return; }
   if (key !== overlayKey) {
