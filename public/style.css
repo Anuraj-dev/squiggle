@@ -617,7 +617,19 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .rp-speed button:first-child { border-left: 0; }
 .rp-speed button[aria-pressed="true"] { background: var(--sun); }
 .rp-speed button:focus-visible { outline: 3px solid var(--grape); outline-offset: -3px; }
-.rp-scrub { flex: 1 1 160px; min-width: 120px; accent-color: var(--tomato); }
+/* Drawn by hand: Chrome's native track runs past where the thumb stops, which
+   left an unfilled stub at the end of a finished replay. --p (0..1) is set by
+   app.js; the fill ends at the thumb's centre, so at 1 the track is full. */
+.rp-scrub {
+  --thumb: 18px;
+  flex: 1 1 160px; min-width: 120px; height: 14px; margin: 0; padding: 0;
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  border: 2px solid var(--ink); border-radius: 999px;
+  background: linear-gradient(to right, var(--tomato) calc(var(--thumb) / 2 + var(--p, 0) * (100% - var(--thumb))), var(--paper-2) 0);
+}
+.rp-scrub::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: var(--thumb); height: var(--thumb); border-radius: 50%; background: var(--card); border: 2.5px solid var(--ink); box-sizing: border-box; }
+.rp-scrub::-moz-range-thumb { width: var(--thumb); height: var(--thumb); border-radius: 50%; background: var(--card); border: 2.5px solid var(--ink); box-sizing: border-box; }
+.rp-scrub:disabled { cursor: default; opacity: 0.5; }
 .rp-time { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.85rem; min-width: 7.5ch; text-align: right; }
 .rp-actions .rec-label, .rp-actions .rec-pct { color: #fffdf8; }
 .rp-actions form { margin: 0; }

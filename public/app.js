@@ -1218,6 +1218,7 @@ function openLightbox(g, opener) {
   } }));
   const player = new ReplayPlayer(cv, g.strokes || [], (ms, playing, total) => {
     scrub.value = String(Math.round(ms));
+    scrub.style.setProperty('--p', total ? String(Math.min(1, ms / total)) : '0');
     time.textContent = `${fmtSec(ms)} / ${fmtSec(total)}`;
     playBtn.textContent = playing ? '⏸️ Pause' : ms >= total ? '🔁 Replay' : '▶️ Play';
     playBtn.setAttribute('aria-label', playing ? 'Pause replay' : ms >= total ? 'Replay from the start' : 'Play replay');
