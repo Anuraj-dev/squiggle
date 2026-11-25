@@ -1202,7 +1202,7 @@ const fmtSec = (ms) => `${(ms / 1000).toFixed(1)}s`;
 function openLightbox(g, opener) {
   const cv = h('canvas', { class: 'replay-cv', width: W, height: H });
   const playBtn = h('button', { class: 'btn rp-play', type: 'button' });
-  const scrub = h('input', { class: 'rp-scrub', type: 'range', min: 0, step: 10, value: 0, 'aria-label': 'Replay position' });
+  const scrub = h('input', { class: 'rp-scrub', type: 'range', min: 0, step: 1, value: 0, 'aria-label': 'Replay position' });
   const time = h('span', { class: 'rp-time' });
   const speedBtns = SPEEDS.map((x) => h('button', { type: 'button', text: `${x}×`, 'aria-pressed': String(x === 1), onclick: () => {
     player.speed = x;
