@@ -1316,15 +1316,18 @@ function renderEnd(fresh) {
         h('a', { href: url, download: `squiggle-${g.word.replace(/[^a-z0-9]+/gi, '-')}.png` }).click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
-      const by = byline(g);
+      const chaos = [g.chaos?.name, g.guesserChaos?.name].filter(Boolean).join(' · ');
       const own = g.drawer?.id === myId;
       return h('figure', { class: 'gal', 'data-id': String(g.id) },
         h('button', { class: 'thumb-btn', 'aria-label': `Replay drawing of ${g.word} by ${g.drawer?.name || 'someone'}`, onclick: (e) => openLightbox(g, e.currentTarget) }, cv),
         h('figcaption', { class: 'cap' },
-          h('span', {}, h('span', { class: 'w', text: g.word }), h('br'), h('span', { class: 'by', text: by })),
-          gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, 'data-own': own ? '1' : null, title: own ? 'Your own drawing' : 'Vote for this drawing',
-            onclick: () => send('vote', { id: S.mvp?.mine === g.id ? null : g.id }) }) : null,
-          h('button', { class: 'dl', text: '⬇', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl })));
+          h('span', { class: 'w', text: g.word }),
+          h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'}` }),
+          chaos ? h('span', { class: 'ch', text: `🌀 ${chaos}` }) : null,
+          h('span', { class: 'acts' },
+            gallery.length > 1 ? h('button', { class: 'vote', type: 'button', disabled: own, 'data-own': own ? '1' : null, title: own ? 'Your own drawing' : 'Vote for this drawing',
+              onclick: () => send('vote', { id: S.mvp?.mine === g.id ? null : g.id }) }) : null,
+            h('button', { class: 'dl', text: '⬇ PNG', title: 'Download PNG', 'aria-label': `Download ${g.word}`, onclick: dl }))));
     })),
     h('div', { class: 'end-actions' },
       h('button', { class: 'btn go big', name: 'again', hidden: !host, text: '🔁 Back to lobby',

@@ -390,15 +390,19 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 .award b { display: block; }
 .award small { color: var(--ink-2); }
 .section-h { font-size: 1.1rem; font-weight: 800; margin: 0; display: flex; align-items: center; gap: 0.5rem; }
-.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 1rem; }
-.gal { border: var(--line); border-radius: 12px; background: #fff; overflow: hidden; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1.1rem; }
+/* figure's default 40px side margins squeezed every card inside its column. */
+.gal { margin: 0; border: var(--line); border-radius: 12px; background: #fff; overflow: hidden; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; }
 .gal:nth-child(odd) { transform: rotate(-0.8deg); }
 .gal:nth-child(even) { transform: rotate(0.8deg); }
 .gal canvas { width: 100%; aspect-ratio: 4 / 3; display: block; border-bottom: 2px solid var(--ink); }
-.gal .cap { padding: 0.5rem 0.6rem; display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
-.gal .cap .w { font-weight: 800; font-size: 1rem; }
-.gal .cap .by { color: var(--ink-2); }
-.gal .cap .dl { margin-left: auto; border: 2px solid var(--ink); border-radius: 8px; background: var(--paper); padding: 0.15rem 0.45rem; font-size: 0.85rem; }
+/* Word, artist, challenges, then one row of actions pinned to the card's bottom so rows line up. */
+.gal .cap { flex: 1; padding: 0.55rem 0.7rem 0.65rem; display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.85rem; min-width: 0; }
+.gal .cap .w { font-weight: 800; font-size: 1.05rem; line-height: 1.2; overflow-wrap: anywhere; }
+.gal .cap .by { color: var(--ink-2); font-weight: 600; }
+.gal .cap .ch { color: var(--ink-2); font-size: 0.78rem; line-height: 1.3; }
+.gal .cap .acts { display: flex; gap: 0.4rem; margin-top: auto; padding-top: 0.45rem; }
+.gal .cap .dl { flex: none; border: 2px solid var(--ink); border-radius: 8px; background: var(--paper); padding: 0.2rem 0.5rem; font-size: 0.85rem; font-weight: 700; }
 .end-actions { display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; }
 .end-actions .btn { min-width: 180px; width: auto; flex: 0 1 auto; }
 
@@ -563,10 +567,9 @@ input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px
 
 .vote-hint { margin: -0.8rem 0 0; font-size: 0.85rem; }
 .gal .cap .vote {
-  margin-left: auto; border: 2px solid var(--ink); border-radius: 8px; background: var(--card); padding: 0.15rem 0.45rem; font-size: 0.85rem;
+  flex: 1; border: 2px solid var(--ink); border-radius: 8px; background: var(--card); padding: 0.15rem 0.45rem; font-size: 0.85rem;
   font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer;
 }
-.gal .cap .vote + .dl { margin-left: 0; }
 .gal .cap .vote[aria-pressed="true"] { background: var(--sun); box-shadow: var(--shadow-sm); }
 .gal .cap .vote:disabled { opacity: 0.45; cursor: not-allowed; }
 .gal.is-mvp { box-shadow: 0 0 0 4px var(--sun), var(--shadow); }
