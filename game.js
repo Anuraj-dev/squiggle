@@ -745,7 +745,7 @@ export class Room {
     if (this.strokes.length && this.gallery.length >= MAX_GALLERY) this.gallery.shift();
     if (this.strokes.length) this.gallery.push({
       id: ++this.galleryN,
-      word: this.word, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos, endMs,
+      word: this.word, deck: this.deck, strokes: galleryStrokes(this.strokes), chaos: this.chaos, guesserChaos: this.guesserChaos, endMs,
       drawer: drawer ? { id: drawer.id, name: drawer.name, avatar: drawer.avatar, color: drawer.color } : null,
     });
     for (const id of this.turnEligible) {

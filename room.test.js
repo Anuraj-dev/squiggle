@@ -1206,6 +1206,7 @@ test('gravity ink records turn endMs on reveal and gallery for deterministic ren
   c.drawer.act('skip');
   expect(c.room.reveal.endMs).toBe(12345);
   expect(c.room.gallery.at(-1).endMs).toBe(12345);
+  expect(c.room.gallery.at(-1).deck).toEqual({ id: expect.any(String), name: expect.any(String), icon: expect.any(String) });
 });
 
 // Draws one stroke and skips, so the turn lands in the gallery; then leaves the reveal.
