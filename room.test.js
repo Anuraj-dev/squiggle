@@ -1316,6 +1316,69 @@ test('finale: a last drawer who drops also makes the current turn the finale', (
   expect(r.finale).toBe(true);
 });
 
+test('finale: at most one per game; a reconnected or fresh drawer after it plays at normal points', () => {
+  const ctx = setup(3);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const token = last.out.find((m) => m.t === 'welcome').token;
+  last.drop();
+  expect(r.finale).toBe(true);
+  // Back within grace: still queued for this round, but the finale is spent.
+  const back = sock('back');
+  back.do('join', { room: ctx.code, name: last.name, token });
+  back.id = last.id;
+  const fresh = sock('F');
+  fresh.do('join', { room: ctx.code, name: 'F' });
+  fresh.id = fresh.out.find((m) => m.t === 'welcome').id;
+  drawer.act('skip');
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(back.id);
+  expect(r.finale).toBe(false);
+  back.act('choose', { i: 0 });
+  const guesser = ctx.ss.find((s) => s.id !== back.id && s !== last);
+  const before = r.players.get(guesser.id).score;
+  advance(10000);
+  guesser.act('chat', { text: r.word });
+  const modes = [r.chaos, r.guesserChaos].filter(Boolean);
+  expect(r.players.get(guesser.id).score - before).toBe(guesserPts({ elapsed: 10000, scoreLen: r.scoreLen, diff: r.diff, chaos: modes, streak: 1 }));
+  back.act('skip'); // ignored: someone solved, so end by time
+  advance(r.timeLeft() + 1);
+  advance(REVEAL_MS);
+  expect(r.drawerId).toBe(fresh.id);
+  expect(r.finale).toBe(false);
+  expect(ctx.ss[0].chats().filter((m) => /FINALE/.test(m.text))).toHaveLength(1);
+});
+
+test('finale: the planned last drawer leaving during reveal changes nothing', () => {
+  const ctx = setup(4);
+  ctx.ss[0].do('start');
+  drawAndSkip(ctx);
+  drawAndSkip(ctx);
+  const r = ctx.room;
+  const drawer = ctx.ss.find((s) => s.id === r.drawerId);
+  drawer.act('choose', { i: 0 });
+  const last = ctx.ss.find((s) => s.id === r.queue[0]);
+  const b = ctx.ss.find((s) => s !== drawer && s !== last && r.turnEligible.includes(s.id) && s.id !== r.queue[0]);
+  advance(5000);
+  b.act('chat', { text: r.word });
+  advance(r.timeLeft() + 1);
+  expect(r.state).toBe('reveal');
+  const scores = [...r.players.values()].map((p) => p.score);
+  const reveal = structuredClone(r.reveal);
+  last.do('leave');
+  expect(r.finale).toBe(false);
+  expect(r.reveal).toEqual(reveal);
+  expect(r.reveal.allBonus).toBe(0);
+  expect([...r.players.values()].map((p) => p.score)).toEqual(scores.filter((_, i) => i !== ctx.ss.indexOf(last)));
+  expect(ctx.ss[0].chats().some((m) => /FINALE/.test(m.text))).toBe(false);
+  advance(REVEAL_MS);
+  expect(r.state).toBe('end');
+});
+
 test('MVP vote: end state only, not your own, one changeable vote each, ties share, no points', () => {
   const ctx = setup(3);
   const [a, b, c] = ctx.ss;

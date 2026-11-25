@@ -154,8 +154,10 @@ export class Room {
     this.rerolled = false;
     // Public wrong guesses this turn, for the reveal recap: { id, text, close }.
     this.wrongGuesses = [];
-    // The last turn of the match scores 2×. Once announced it is never taken back.
+    // The last turn of the match scores 2×. Once announced it is never taken back,
+    // and a game has at most one: `finaleSpent` stops a rejoin from making another.
     this.finale = false;
+    this.finaleSpent = false;
     this.galleryN = 0;
     // Gallery MVP: voter id -> gallery drawing id. End state only.
     this.votes = new Map();
@@ -464,6 +466,7 @@ export class Room {
     this.votes.clear();
     this.round = 0;
     this.chaos = null;
+    this.finaleSpent = false;
     this.nextRound();
   }
 
@@ -777,22 +780,23 @@ export class Room {
   }
 
   // Marks the current turn as the finale once it is known to be the last one:
-  // at the start of the turn, or later when the planned last drawer leaves or
-  // drops. A late upgrade doubles points already scored this turn, so every
-  // finale point is 2× however it became the finale. Never downgraded: if a
-  // dropped player returns and draws after it, that turn is a finale too.
+  // at the start of the turn, or later (while choosing or drawing) when the
+  // planned last drawer leaves or drops. A late upgrade doubles points already
+  // scored this turn, so every finale point is 2× however it became the
+  // finale. Never downgraded, and once per game: if a dropped player returns
+  // and draws after it, that turn scores normally. A reveal is settled, so a
+  // departure then changes nothing.
   refreshFinale() {
-    if (this.finale || !this.inPlay() || !this.drawerId || !this.lastTurn()) return false;
+    if (this.finale || this.finaleSpent || !this.drawerId || !this.lastTurn()) return false;
+    if (this.state !== 'choosing' && this.state !== 'drawing') return false;
     this.finale = true;
+    this.finaleSpent = true;
     for (const [id, x] of this.guessed) {
       const q = this.players.get(id);
       if (q) q.score += x.pts * (FINALE_MULT - 1);
       x.pts *= FINALE_MULT;
     }
-    if (this.state !== 'choosing') this.awardDrawer();
-    if (this.state === 'reveal' && this.reveal) {
-      Object.assign(this.reveal, { finale: true, deltas: this.revealDeltas(), allBonus: this.reveal.allBonus * FINALE_MULT });
-    }
+    if (this.state === 'drawing') this.awardDrawer();
     this.system('🔥 FINALE · 2× points: last turn of the game!', 'warn');
     return true;
   }
@@ -859,7 +863,7 @@ export class Room {
   toLobby(msg) {
     this.beginPhase('lobby');
     Object.assign(this, {
-      drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [], finale: false,
+      drawerId: null, word: null, chaos: null, guesserChaos: null, round: 0, reveal: null, endData: null, turnEligible: [], finale: false, finaleSpent: false,
     });
     this.votes.clear();
     this.resetCanvas();
