@@ -1207,7 +1207,7 @@ function openLightbox(g, opener) {
     time.textContent = `${fmtSec(ms)} / ${fmtSec(total)}`;
     playBtn.textContent = playing ? '⏸ Pause' : ms >= total ? '↺ Replay' : '▶ Play';
     playBtn.setAttribute('aria-label', playing ? 'Pause replay' : 'Play replay');
-  });
+  }, g.endMs);
   scrub.max = String(Math.round(player.total));
   scrub.disabled = !player.total;
   playBtn.onclick = () => (player.playing ? player.pause() : player.play());

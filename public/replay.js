@@ -132,8 +132,11 @@ const paperCanvas = () => {
 // frame; scrubbing backwards rebuilds the cache. A game reel passes one shared
 // cache to every drawing's renderer; whoever drew last owns its contents.
 export class ReplayRenderer {
-  constructor(strokes, cache = null) {
+  // `endMs` (the turn's end) renders Gravity Ink at its final resting place,
+  // matching the gallery thumbnail.
+  constructor(strokes, cache = null, endMs = null) {
     this.strokes = orderStrokes(strokes || []);
+    this.opts = endMs != null ? { gameMs: endMs } : {};
     this.tl = buildTimeline(this.strokes);
     this.cache = cache;
     this.doneN = 0;
@@ -145,19 +148,21 @@ export class ReplayRenderer {
     const { done, partial } = frameAt(this.tl, ms);
     const k = (this.cache ||= {});
     if (!k.cv) [k.cv, k.c] = paperCanvas();
-    if (k.owner !== this || done < this.doneN) { paintPaper(k.c, this.strokes.slice(0, done)); this.doneN = done; k.owner = this; }
-    for (; this.doneN < done; this.doneN++) drawStroke(k.c, this.strokes[this.doneN]);
+    if (k.owner !== this || done < this.doneN) { paintPaper(k.c, this.strokes.slice(0, done), this.opts); this.doneN = done; k.owner = this; }
+    for (; this.doneN < done; this.doneN++) drawStroke(k.c, this.strokes[this.doneN], 0, this.opts);
     ctx.drawImage(k.cv, 0, 0);
-    if (partial) drawStroke(ctx, partialStroke(this.strokes[partial.i], partial.frac));
+    if (partial) drawStroke(ctx, partialStroke(this.strokes[partial.i], partial.frac), 0, this.opts);
+    // Decoy Doodle strokes sit above eraser strokes, as paintPaper draws them.
+    for (let i = 0; i < done; i++) if (this.strokes[i].decoy) drawStroke(ctx, this.strokes[i], 0, this.opts);
   }
 }
 
 // Play/pause/speed/seek for the lightbox. `onFrame(ms, playing, total)` fires after
 // each painted frame so the controls can follow.
 export class ReplayPlayer {
-  constructor(canvas, strokes, onFrame = () => {}) {
+  constructor(canvas, strokes, onFrame = () => {}, endMs = null) {
     this.ctx = canvas.getContext('2d', { willReadFrequently: true });
-    this.r = new ReplayRenderer(strokes);
+    this.r = new ReplayRenderer(strokes, null, endMs);
     this.onFrame = onFrame;
     this.ms = 0; this.speed = 1; this.playing = false; this.raf = 0; this.last = 0;
     this.seek(0);
@@ -221,7 +226,7 @@ export function drawTitleCard(c, g, index, count) {
 // Segments for one drawing: its replay squeezed to `target` ms, then a hold
 // on the finished picture. A reel prefixes each drawing with a title card.
 export function drawingSegments(g, { target = CLIP_MS, card = null, cache = null } = {}) {
-  const r = new ReplayRenderer(g.strokes, cache);
+  const r = new ReplayRenderer(g.strokes, cache, g.endMs);
   const plan = clipPlan(r.total, target);
   const segs = [];
   if (card) segs.push({ ms: CARD_MS, paint: (c) => drawTitleCard(c, g, card.index, card.count) });
