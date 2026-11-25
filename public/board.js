@@ -2,7 +2,7 @@
 // export. Every paint function draws in paper coordinates onto a full-size
 // (W×H) context whose transform is identity on entry, so live view, gallery
 // and download all rasterise the same way. No DOM access at import time.
-import { W, H, fadeAlpha, fadeMs, rotateHue, gravityOffset, strokeMaxY } from './shared.js';
+import { W, H, fadeAlpha, fadeMs, gravityOffset, strokeMaxY } from './shared.js';
 
 let makeCanvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h });
 export function setCanvasFactory(fn) { makeCanvas = fn; }
@@ -88,17 +88,14 @@ export function views(s) {
 }
 
 // opts.fade: apply ghost-ink alpha using opts.gameMs and opts.chaos.
-// opts.hueFlip: rotate ink hue by 180° × strength (Opposite Colors).
 export function drawStroke(c, s, from = 0, opts = {}) {
   let alpha = 1;
   if (opts.fade) {
     alpha = fadeAlpha((opts.gameMs || 0) - (s.t || 0), fadeMs(opts.chaos?.seed || 1));
     if (alpha <= 0) return;
   }
-  const flip = opts.hueFlip || 0;
   const dy = s.gravity ? gravityOffset((opts.gameMs || 0) - (s.t || 0), strokeMaxY(s)) : 0;
-  const rawColor = s.tool === 'fill' && s.rainbow ? RAINBOW_FILLS[hashId(s.id) % RAINBOW_FILLS.length] : s.color;
-  const color = flip ? rotateHue(rawColor, flip) : rawColor;
+  const color = s.tool === 'fill' && s.rainbow ? RAINBOW_FILLS[hashId(s.id) % RAINBOW_FILLS.length] : s.color;
   for (const [sx, sy, tx, ty, a] of views(s)) {
     c.save();
     c.globalAlpha = alpha * a;
@@ -113,7 +110,7 @@ export function drawStroke(c, s, from = 0, opts = {}) {
         c.beginPath(); c.rect(0, 0, W, H); c.rect(x, y, w, h);
         c.clip('evenodd');
       }
-      paint(c, s, from, flip);
+      paint(c, s, from);
     }
     c.restore();
   }
@@ -134,6 +131,13 @@ export function paintPaper(c, strokes, opts = {}) {
   for (const s of decoys) drawStroke(c, s, 0, opts);
 }
 
+// Incremental counterpart of paintPaper: paints one new stroke or segment, then
+// the decoys again on top, so live, resync and replay stack them the same way.
+export function drawLiveStroke(c, strokes, s, from = 0, opts = {}) {
+  drawStroke(c, s, from, opts);
+  if (!s.decoy) for (const d of strokes) if (d.decoy) drawStroke(c, d, 0, opts);
+}
+
 let thumbPaper = null;
 // Thumbnails rasterise at full resolution on one reusable canvas, then scale.
 export function paintThumb(tctx, w, h, strokes, opts = {}) {
@@ -142,12 +146,12 @@ export function paintThumb(tctx, w, h, strokes, opts = {}) {
   tctx.drawImage(thumbPaper, 0, 0, w, h);
 }
 
-function paint(c, s, from, flip = 0) {
+function paint(c, s, from) {
   const p = s.pts;
   c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = s.size;
   if (s.dotted) c.setLineDash?.([0.1, s.size * 2]);
   const erasing = s.tool === 'eraser';
-  const base = erasing ? '#ffffff' : (flip ? rotateHue(s.color, flip) : s.color);
+  const base = erasing ? '#ffffff' : s.color;
   const rainbow = !!(s.rainbow && !erasing);
   if (s.tool === 'stamp') {
     const [x1, y1, x2, y2] = p;
@@ -217,7 +221,7 @@ function paint(c, s, from, flip = 0) {
     const [x1, y1, x2, y2] = p;
     if (rainbow) {
       const g = c.createLinearGradient(x1, y1, x2, y2);
-      RAINBOW.forEach((col, i) => g.addColorStop(i / (RAINBOW.length - 1), flip ? rotateHue(col, flip) : col));
+      RAINBOW.forEach((col, i) => g.addColorStop(i / (RAINBOW.length - 1), col));
       c.strokeStyle = g;
     } else c.strokeStyle = base;
     c.beginPath();
@@ -229,7 +233,7 @@ function paint(c, s, from, flip = 0) {
   }
   const n = p.length / 2;
   const hue0 = hashId(s.id) % 360;
-  const colorAt = (k) => (rainbow ? `hsl(${(hue0 + k * 5 + 180 * flip) % 360} 90% 55%)` : base);
+  const colorAt = (k) => (rainbow ? `hsl(${(hue0 + k * 5) % 360} 90% 55%)` : base);
   if (n === 1) {
     c.fillStyle = colorAt(0);
     c.beginPath(); c.arc(p[0], p[1], s.size / 2, 0, Math.PI * 2); c.fill();

@@ -131,33 +131,6 @@ export function stampBounds(pts, shape) {
   return [x1 + sx, y1 + sy, x2 + sx, y2 + sy].map(Math.round);
 }
 
-// Rotate a #rrggbb color's hue by 180° * strength while keeping lightness and
-// saturation intact, so black/white/grays and the paper stay unchanged.
-export function rotateHue(hex, strength = 1) {
-  if (!strength || strength <= 0 || !/^#[0-9a-f]{6}$/i.test(hex)) return hex;
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
-  if (d === 0) return hex;
-  const l = (max + min) / 2;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  h = (h / 6 + 0.5 * Math.min(1, strength)) % 1;
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-  const chan = (t) => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-    return p;
-  };
-  const byte = (v) => Math.round(v * 255).toString(16).padStart(2, '0');
-  return `#${byte(chan(h + 1 / 3))}${byte(chan(h))}${byte(chan(h - 1 / 3))}`;
-}
-
 export function strokeMaxY(s) {
   const p = s?.pts;
   if (!p?.length) return 0;
@@ -449,6 +422,9 @@ export function allowedTool(chaos, tool) {
   if (is(chaos, 'fade')) return tool !== 'fill';
   if (is(chaos, 'shapes')) return tool !== 'pen' && tool !== 'eraser';
   if (is(chaos, 'permanent')) return tool !== 'eraser';
+  // Gravity slides each stroke by its own age, so a fill seed or an eraser pass
+  // would drift away from the ink it was aimed at.
+  if (is(chaos, 'gravity')) return tool !== 'fill' && tool !== 'eraser';
   return true;
 }
 

@@ -2,7 +2,7 @@
 // small recording 2D context (tracks the transform and a pixel buffer).
 import { expect, test } from 'bun:test';
 import { W, H, STAMP_SHAPES } from './public/shared.js';
-import { applyStroke, drawStroke, floodRegion, paintPaper, paintThumb, setCanvasFactory, views } from './public/board.js';
+import { applyStroke, drawLiveStroke, drawStroke, floodRegion, paintPaper, paintThumb, setCanvasFactory, views } from './public/board.js';
 
 class FakeCtx {
   constructor(w, h) {
@@ -164,20 +164,6 @@ test('stamps draw all shapes with size and rotation from drag vector', () => {
   expect(pts(c).slice(0, 2).map(([x, y]) => [Math.round(x), Math.round(y)])).toEqual([[200, 200], [100, 100]]);
 });
 
-test('Opposite Colors flips ink hue on strokes and fills while keeping black and gallery true', () => {
-  const c = new FakeCtx(W, H);
-  drawStroke(c, { id: 'r', tool: 'line', size: 4, color: '#ff0000', pts: [0, 0, 50, 50] }, 0, { hueFlip: 1 });
-  drawStroke(c, { id: 'b', tool: 'line', size: 4, color: '#000000', pts: [0, 0, 50, 50] }, 0, { hueFlip: 1 });
-  expect(c.strokes).toEqual(['#00ffff', '#000000']);
-  const thumb = new FakeCtx(280, 210);
-  paintThumb(thumb, 280, 210, [{ id: 'f', tool: 'fill', color: '#ff0000', pts: [5, 5] }]);
-  const i = (5 * W + 5) * 4;
-  expect([...thumb.ops[0][1].ctx.data.slice(i, i + 3)]).toEqual([255, 0, 0]);
-  const flippedPaper = new FakeCtx(W, H);
-  paintPaper(flippedPaper, [{ id: 'f', tool: 'fill', color: '#ff0000', pts: [5, 5] }], { hueFlip: 1 });
-  expect([...flippedPaper.data.slice(i, i + 3)]).toEqual([0, 255, 255]);
-});
-
 test('Gravity Ink slides strokes down deterministically across live and gallery renders', () => {
   const s = { id: 'g', tool: 'line', size: 4, color: '#000000', pts: [100, 100, 200, 100], t: 1000, gravity: true };
   const live = new FakeCtx(W, H);
@@ -194,4 +180,21 @@ test('Decoy Doodle renders decoys again after erasers so they cannot be erased',
   const eraser = { id: 'p:1', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
   paintPaper(c, [decoy, eraser]);
   expect(c.strokes).toEqual(['#1d1b1a', '#ffffff', '#1d1b1a']);
+});
+
+test('live incremental strokes leave decoys on top, as a full repaint does', () => {
+  const decoy = { id: 'decoy:0', by: null, tool: 'line', size: 10, color: '#1d1b1a', pts: [10, 10, 50, 50], decoy: true };
+  const white = { id: 'p:1', by: 'p', tool: 'line', size: 20, color: '#ffffff', pts: [10, 10, 50, 50] };
+  const eraser = { id: 'p:2', by: 'p', tool: 'eraser', size: 20, color: '#000000', pts: [10, 10, 50, 50] };
+  const strokes = [decoy, white, eraser];
+  const live = new FakeCtx(W, H), full = new FakeCtx(W, H);
+  drawLiveStroke(live, strokes, decoy);
+  drawLiveStroke(live, strokes, white);
+  drawLiveStroke(live, strokes, eraser);
+  paintPaper(full, strokes);
+  expect(live.strokes.at(-1)).toBe('#1d1b1a');
+  expect(full.strokes.at(-1)).toBe('#1d1b1a');
+  // A decoy itself is not drawn twice by the live path.
+  expect(live.strokes.slice(0, 1)).toEqual(['#1d1b1a']);
+  expect(live.strokes[1]).toBe('#ffffff');
 });

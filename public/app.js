@@ -2,7 +2,7 @@
 import { W, H, is, clientClock, applyChaos, allowedTool, canUndo, jitterPts, podiumGroups, CHAOS_MODES, MEMORY_STROKES,
   INK_BUDGET, viewStrength, turnProgress, STAMP_SHAPES, stampBounds, forbiddenZone, shrinkingSize, slipperyPts,
   recentInkCenter, macroView, scoreMult, DIFF_MULT } from './shared.js';
-import { applyStroke, drawStroke, paintPaper, paintThumb } from './board.js';
+import { applyStroke, drawLiveStroke, drawStroke, paintPaper, paintThumb } from './board.js';
 import { renderShareCard } from './share.js';
 import { ReplayPlayer, SPEEDS, recordingSupported, recordSegments, drawingSegments, reelSegments, deliverClip, clipName } from './replay.js';
 import { createMusic } from './music.js';
@@ -411,13 +411,12 @@ const strength = () => {
 };
 const fading = () => liveChaos('fade');
 // Modes whose picture changes with time, not just with new strokes.
-const timed = () => fading() || liveChaos('gravity') || guesserView('negative') || guesserView('pixel') || guesserView('puzzle');
+const timed = () => fading() || liveChaos('gravity') || guesserView('pixel') || guesserView('puzzle');
 const renderOpts = () => ({
   chaos: S?.chaos,
   gameMs: S?.state === 'reveal' ? (S.reveal?.endMs ?? 0) : gameMs(),
   fade: fading(),
   memory: liveChaos('memory') ? MEMORY_STROKES : 0,
-  hueFlip: guesserView('negative') ? strength() : 0,
 });
 const markDirty = () => { dirty = true; };
 
@@ -463,8 +462,8 @@ function present() {
 }
 // Live strokes paint incrementally unless a mode needs the full picture.
 function drawLive(s, from) {
-  if (dirty || timed() || liveChaos('memory') || guesserView('pixel') || (s.tool === 'eraser' && strokes.some((x) => x.decoy))) markDirty();
-  else drawStroke(ctx, s, from, renderOpts());
+  if (dirty || timed() || liveChaos('memory') || guesserView('pixel')) markDirty();
+  else drawLiveStroke(ctx, strokes, s, from, renderOpts());
 }
 
 let tool = 'pen', stampShape = 'circle', color = '#1d1b1a', size = 10, cur = null, shape = null, pending = [], flushT = null, hover = null, pointerId = null, rawLast = null;
@@ -1151,14 +1150,18 @@ function queueThumbs(items) {
 const recordings = new Set();
 
 // A button that records a video and hands it over, showing progress and a
-// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Returns
-// null (no button at all) where the browser cannot record.
-function recorder(label, title, job) {
+// Cancel button meanwhile. `job()` returns { segments, name(ext) }. Aborting
+// `until` (e.g. its dialog closing) cancels a running recording. Returns null
+// (no button at all) where the browser cannot record.
+function recorder(label, title, job, until) {
   if (!recordingSupported()) return null;
   const wrap = h('div', { class: 'rec' });
   const idle = () => fill(wrap, h('button', { class: 'btn', type: 'button', text: label, title, onclick: start }));
   async function start() {
+    if (until?.aborted) return;
     const ctl = new AbortController();
+    const stop = () => ctl.abort();
+    until?.addEventListener('abort', stop, { once: true });
     recordings.add(ctl);
     const bar = h('progress', { max: 1, value: 0, 'aria-label': 'Recording progress' });
     const pct = h('span', { class: 'rec-pct', text: '0%' });
@@ -1171,6 +1174,7 @@ function recorder(label, title, job) {
         signal: ctl.signal,
         onProgress: (f) => { bar.value = f; pct.textContent = `${Math.round(f * 100)}%`; },
       });
+      ctl.signal.throwIfAborted();
       const filename = name(clip.ext);
       const out = deliverClip(clip, filename);
       if (!out.shared) { toast(`Saved ${filename} 🎬`); idle(); wrap.firstChild?.focus(); return; }
@@ -1183,6 +1187,7 @@ function recorder(label, title, job) {
       if (wrap.isConnected) { idle(); wrap.firstChild?.focus(); }
     } finally {
       recordings.delete(ctl);
+      until?.removeEventListener('abort', stop);
     }
   }
   idle();
@@ -1213,9 +1218,11 @@ function openLightbox(g, opener) {
   playBtn.onclick = () => (player.playing ? player.pause() : player.play());
   // Read the position first: pausing repaints and moves the scrubber back.
   scrub.oninput = () => { const ms = +scrub.value; player.pause(); player.seek(ms); };
+  // Closing the lightbox by any path (button, Escape, backdrop) stops its clip.
+  const life = new AbortController();
   const clip = recorder('⬇ Download clip', 'About 6 seconds of video', () => ({
     segments: drawingSegments(g), name: (ext) => clipName(g.word, g.drawer?.name, ext),
-  }));
+  }), life.signal);
   const box = h('dialog', { class: 'lightbox replay', 'aria-label': `Replay of ${g.word} by ${g.drawer?.name || 'someone'}` },
     h('div', { class: 'rp-head' }, h('b', { class: 'w', text: g.word }), h('span', { class: 'by', text: byline(g) })),
     cv,
@@ -1227,6 +1234,7 @@ function openLightbox(g, opener) {
       h('form', { method: 'dialog' }, h('button', { class: 'btn', text: 'Close' }))));
   box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
   box.addEventListener('close', () => {
+    life.abort();
     player.destroy();
     box.remove();
     opener?.focus();
@@ -1369,7 +1377,7 @@ function syncVotes(modal) {
       return h('button', { class: 'mvp-card', type: 'button', 'aria-label': `Replay MVP drawing of ${g.word}`, onclick: (e) => openLightbox(g, e.currentTarget) },
         cv, h('span', { class: 'w', text: g.word }), h('span', { class: 'by', text: `${g.drawer?.avatar || ''} ${g.drawer?.name || '?'} · ${votes} vote${votes === 1 ? '' : 's'}` }));
     })));
-  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || []);
+  for (const [cv, g] of thumbs) paintThumb(cv.getContext('2d'), cv.width, cv.height, g.strokes || [], g.endMs != null ? { gameMs: g.endMs } : {});
 }
 
 // The end screen has no "dismiss" — Esc must not strand players behind it.
@@ -1401,6 +1409,9 @@ function paintGuesserView(now) {
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const filters = [];
   if (guesserView('fog')) filters.push(`blur(${14 * amount}px)`);
+  // Opposite Colors: the board stays true-colour (so fills match the artist's)
+  // and only the guesser's canvas element is hue-rotated; paper and grays stay put.
+  if (guesserView('negative') && amount > 0) filters.push(`hue-rotate(${(180 * amount).toFixed(1)}deg)`);
   board.style.filter = filters.join(' ');
   if (!guesserView('macro')) {
     board.style.transform = guesserView('spin') && !reducedMotion && amount > 0
