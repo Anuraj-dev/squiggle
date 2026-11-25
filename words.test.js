@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { WORDS, ALIASES, allDefaultWords, canonKey, matchesAnswer, mentionsAnswer, dedupeCustom } from './words.js';
+import { WORDS, ALIASES, allDefaultWords, canonKey, matchesAnswer, mentionsAnswer, dedupeCustom, singulars, stripWrapper } from './words.js';
 import { NEW_WORDS } from './words-new.js';
 import { norm } from './public/shared.js';
 
@@ -151,4 +151,35 @@ test('new word set: full tiers, drawable labels, no overlap with the legacy bank
     expect(legacy.has(canonKey(w).replace(/[ -]/g, ''))).toBe(false);
     expect(ABSTRACT).not.toContain(w);
   }
+});
+
+test('one sentence wrapper around a single answer scores; lists and junk do not', () => {
+  for (const [guess, word] of [
+    ['is it a cat?', 'cat'], ['its the cat', 'cat'], ["it's a cat lol", 'cat'], ['i think its an apple', 'apple'],
+    ['maybe cat', 'cat'], ['probably the fire truck pls', 'fire truck'], ['must be a rabbit bro', 'rabbit'],
+    ['looks like bunnies', 'rabbit'], ['the cat', 'cat'], ['cat right', 'cat'], ['IS IT A FRIDGE', 'refrigerator'],
+  ]) expect(matchesAnswer(guess, word)).toBe(true);
+  for (const [guess, word] of [
+    ['cat dog car', 'cat'], ['cat or dog', 'cat'], ['is it not a cat', 'cat'], ['maybe maybe cat', 'cat'],
+    ['is it', 'its'], ['a', 'cat'], ['lol', 'cat'],
+  ]) expect(matchesAnswer(guess, word)).toBe(false);
+  // A list still mentions the answer, so it is held back as a spoiler.
+  expect(mentionsAnswer('cat dog car', 'cat')).toBe(true);
+  expect(stripWrapper('Is it a big cat, please?')).toBe('big cat');
+});
+
+test('regular plurals match in both directions for any word, without fuzzy wins', () => {
+  for (const [guess, word] of [
+    ['flash drives', 'flash drive'], ['berries', 'berry'], ['wolves', 'wolf'], ['knives', 'knife'],
+    ['glasses', 'glass'], ['glass', 'glasses'], ['buses', 'bus'], ['boxes', 'box'], ['shoes', 'shoe'],
+    ['heroes', 'hero'], ['my friend sams', 'my friend sam'], ['memes', 'meme'], ['is it wolves', 'wolf'],
+  ]) expect(matchesAnswer(guess, word)).toBe(true);
+  for (const [guess, word] of [
+    ['catz', 'cat'], ['ca', 'cat'], ['bu', 'bus'], ['octopu', 'octopus'], ['iri', 'iris'], ['glas', 'glass'],
+    ['berri', 'berry'], ['wolfs', 'wolves'], ['as', 'a'], ['is', 'i'], ['gas', 'ga'],
+  ]) expect(matchesAnswer(guess, word)).toBe(false);
+  // Stubs are never stripped: short words and -ss/-us/-is endings.
+  for (const w of ['as', 'is', 'gas', 'bus', 'iris', 'glass', 'cactus']) expect(singulars(w)).toEqual([]);
+  expect(mentionsAnswer('so many flash drives here', 'flash drive')).toBe(true);
+  expect(mentionsAnswer('wolves everywhere', 'wolf')).toBe(true);
 });

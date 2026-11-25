@@ -1714,32 +1714,76 @@ export function allDefaultWords() {
   return [...WORDS.easy, ...WORDS.medium, ...WORDS.hard];
 }
 
+// Deck aliases (`decks.js` registers them at load). Kept apart from ALIASES so
+// the curated legacy table stays exactly what words.test.js audits.
+const EXTRA_ALIASES = new Map();
+export function registerAlias(variant, answer) { EXTRA_ALIASES.set(norm(variant), norm(answer)); }
+
 export function canonKey(s) {
   const n = norm(s);
-  return ALIASES[n] ? norm(ALIASES[n]) : n;
+  return ALIASES[n] ? norm(ALIASES[n]) : EXTRA_ALIASES.get(n) || n;
 }
 
-export function matchesAnswer(guess, word) {
-  const g = canonKey(guess);
-  const w = canonKey(word);
+// Plausible singulars of a phrase's last word: s, es, ies->y, ves->f/fe.
+// Guards keep stubs out: the last word needs 4+ letters, the stem 3+, and
+// "-ss", "-us", "-is" endings are never stripped ("glass", "bus", "iris").
+// Some candidates are junk ("berrie"); they only matter if they equal an answer.
+export function singulars(s) {
+  const n = norm(s);
+  const i = n.lastIndexOf(' ') + 1;
+  const head = n.slice(0, i), last = n.slice(i);
+  if (last.length < 4 || !last.endsWith('s') || /(ss|us|is)$/.test(last)) return [];
+  const out = new Set([last.slice(0, -1)]);
+  if (last.endsWith('ies')) out.add(`${last.slice(0, -3)}y`);
+  if (last.endsWith('ves')) { out.add(`${last.slice(0, -3)}f`); out.add(`${last.slice(0, -3)}fe`); }
+  if (/(s|x|z|ch|sh|o)es$/.test(last)) out.add(last.slice(0, -2));
+  return [...out].filter((w) => w.length >= 3).map((w) => head + w);
+}
+
+const flat = (k) => k.replace(/ /g, '');
+const sameKey = (a, b) => !!a && !!b && (a === b || flat(a) === flat(b));
+
+// One guess against one answer: equal, alias, or a regular plural either way
+// ("flash drives" -> "flash drive", "glass" <-> "glasses"). No edit distance.
+function sameAnswer(guess, word) {
+  const g = canonKey(guess), w = canonKey(word);
   if (!g || !w) return false;
-  if (g === w) return true;
-  if (g.replace(/ /g, '') === w.replace(/ /g, '')) return true;
-  return false;
+  if (sameKey(g, w)) return true;
+  return singulars(guess).some((s) => sameKey(canonKey(s), w)) || singulars(word).some((s) => sameKey(g, canonKey(s)));
+}
+
+// Sentence wrappers people type around an answer. One opener at most, then an
+// optional article; trailing fillers may stack ("cat lol bro").
+const OPENERS = ['i think its', 'i think', 'is it', 'it is', 'its', 'maybe', 'probably', 'must be', 'looks like']
+  .map((o) => o.split(' '));
+const ARTICLES = new Set(['a', 'an', 'the']);
+const FILLERS = new Set(['pls', 'please', 'lol', 'bro', 'right', 'maybe']);
+
+export function stripWrapper(text) {
+  let toks = norm(text).split(' ').filter(Boolean);
+  const op = OPENERS.find((o) => o.length < toks.length && o.every((t, k) => toks[k] === t));
+  if (op) toks = toks.slice(op.length);
+  if (toks.length > 1 && ARTICLES.has(toks[0])) toks = toks.slice(1);
+  while (toks.length > 1 && FILLERS.has(toks.at(-1))) toks = toks.slice(0, -1);
+  return toks.join(' ');
+}
+
+// The whole input first, then with its wrapper stripped ("is it a cat?").
+export function matchesAnswer(guess, word) {
+  if (sameAnswer(guess, word)) return true;
+  const inner = stripWrapper(guess);
+  return inner !== norm(guess) && sameAnswer(inner, word);
 }
 
 // True when a run of whole words in `text` is the answer, an alias of it, or
 // a plural ("lol bunnies" mentions "rabbit"). Whole words only, so "giant"
 // does not mention "ant".
 export function mentionsAnswer(text, word) {
-  const w = canonKey(word).replace(/ /g, '');
-  if (!w) return false;
+  if (!canonKey(word)) return false;
   const toks = norm(text).split(' ').filter(Boolean);
   for (let i = 0; i < toks.length; i++) {
     for (let j = i + 1; j <= Math.min(toks.length, i + 5); j++) {
-      const run = toks.slice(i, j).join(' ');
-      const c = canonKey(run).replace(/ /g, '');
-      if (c === w || c === `${w}s` || c === `${w}es`) return true;
+      if (sameAnswer(toks.slice(i, j).join(' '), word)) return true;
     }
   }
   return false;

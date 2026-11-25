@@ -556,27 +556,17 @@ export class Room {
       this.correct(p);
       return true;
     }
+    const w = norm(this.word), g = norm(text);
+    // A list or sentence that contains the answer stays private and, under
+    // Limited Guesses, costs an attempt like any other wrong guess.
     if (this.spoils(text)) {
-      this.send(p, 'chat', { kind: 'close', text: `“${text}” — just the word, please. Not shown to others.` });
+      if (limited && !this.chargeAttempt(p, g, false)) return false;
+      this.send(p, 'chat', { kind: 'close', text: `“${text}” — try one guess. Not shown to others.` });
       return false;
     }
-    const w = norm(this.word), g = norm(text);
     const tol = w.length >= 8 ? 2 : w.length >= 4 ? 1 : 0;
     const close = tol && (lev(g, w) <= tol || lev(canonKey(text), canonKey(this.word)) <= tol);
-    if (limited) {
-      const budget = this.guessBudget(p), b = this.guessBudgets.get(p.id);
-      if (!budget.unlimited && !close && !b.seen.has(g)) {
-        if (b.remaining === 0) {
-          this.send(p, 'toast', { text: `Next attempt in ${Math.ceil(budget.nextIn / 1000)}s` });
-          this.sendGuessBudget(p);
-          return false;
-        }
-        b.remaining--;
-      }
-      b.seen.add(g);
-      this.sendGuessBudget(p);
-      this.scheduleChallenges();
-    }
+    if (limited && !this.chargeAttempt(p, g, close)) return false;
     this.broadcast('chat', { kind: 'guess', from: p.id, text });
     if (close) {
       p.close++;
@@ -587,6 +577,24 @@ export class Room {
   }
 
   spoils(text) { return mentionsAnswer(text, this.word); }
+
+  // Limited Guesses: one attempt per distinct guess; near typos (`free`) and
+  // repeats cost nothing. False (with a toast) when no attempt is left.
+  chargeAttempt(p, g, free) {
+    const budget = this.guessBudget(p), b = this.guessBudgets.get(p.id);
+    if (!budget.unlimited && !free && !b.seen.has(g)) {
+      if (b.remaining === 0) {
+        this.send(p, 'toast', { text: `Next attempt in ${Math.ceil(budget.nextIn / 1000)}s` });
+        this.sendGuessBudget(p);
+        return false;
+      }
+      b.remaining--;
+    }
+    b.seen.add(g);
+    this.sendGuessBudget(p);
+    this.scheduleChallenges();
+    return true;
+  }
 
   correct(p) {
     const elapsed = this.clockMs();
