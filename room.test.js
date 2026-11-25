@@ -1,10 +1,10 @@
 // In-process room tests: fake sockets and a manual clock, so every assertion
 // is on observed messages/state and no test waits on wall time.
 import { beforeEach, expect, test, spyOn } from 'bun:test';
-import { clock, onMessage, onClose, rooms, setWordHistory, recapGuesses } from './game.js';
+import { clock, onMessage, onClose, rooms, setWordHistory, flushWordHistory, recapGuesses } from './game.js';
 import { WordHistory } from './history.js';
 import { DECK_BY_ID, DECK_CATALOG } from './decks.js';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NEW_WORDS } from './words-new.js';
@@ -1154,6 +1154,19 @@ test('custom words are one card per deal, rotate by recency and are never writte
   for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, w)).toBe(!custom.includes(w));
   for (const w of custom) expect(saved).not.toHaveProperty(w);
   expect(Object.keys(saved).length).toBeGreaterThan(10);
+});
+
+test('flushWordHistory writes a pending debounced save immediately (shutdown path)', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'squiggle-room-')), 'h.json');
+  setWordHistory(new WordHistory({ path, valid: null, delay: 1e9 }));
+  flushWordHistory(); // nothing pending: no file
+  expect(existsSync(path)).toBe(false);
+  const ctx = setup(2, { customOnly: false, customWords: '' });
+  ctx.ss[0].do('start');
+  expect(existsSync(path)).toBe(false);
+  flushWordHistory();
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  expect(Object.keys(saved).length).toBe(ctx.room.choices.length);
 });
 
 test('word memory survives a rematch and dealt cards come in shuffled order', () => {

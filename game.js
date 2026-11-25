@@ -38,6 +38,8 @@ const raw = (ws, t, data = {}) => { try { ws.send(JSON.stringify({ t, ...data })
 // side-effect free. Tests inject an in-memory store with setWordHistory().
 let sharedHistory = null;
 export function setWordHistory(h) { sharedHistory = h; }
+// Writes a pending debounced save now (graceful shutdown).
+export function flushWordHistory() { if (sharedHistory?.timer) sharedHistory.flush(); }
 const wordHistory = () => sharedHistory ||= new WordHistory({
   path: process.env.SQUIGGLE_HISTORY || new URL('./data/word-history.json', import.meta.url).pathname,
   valid: ALL_DECK_KEYS,
