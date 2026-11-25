@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NEW_WORDS } from './words-new.js';
+import { canonKey } from './words.js';
 import {
   GAME_GRACE, MAX_STROKE_PTS, MAX_TURN_COORDS, CHOOSE_MS, REVEAL_MS,
   guesserPts, drawerPts, jitterPts,
@@ -1151,7 +1152,8 @@ test('custom words are one card per deal, rotate by recency and are never writte
   for (const w of custom) expect(counts.get(w) / 200).toBeLessThan(0.25);
   history.flush();
   const saved = JSON.parse(readFileSync(path, 'utf8'));
-  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, w)).toBe(!custom.includes(w));
+  // Disk keys are canonical ("t-shirt" is saved as "t shirt").
+  for (const w of [...first, ...rerolled]) expect(Object.hasOwn(saved, canonKey(w))).toBe(!custom.includes(w));
   for (const w of custom) expect(saved).not.toHaveProperty(w);
   expect(Object.keys(saved).length).toBeGreaterThan(10);
 });
@@ -1270,15 +1272,19 @@ test('recap: most repeated wrong guess first, then longest; one per player; no c
 });
 
 test('reveal carries the wrong-guess recap; close guesses stay out', () => {
-  const ctx = setup(3);
-  const { drawer, guessers: [b, c] } = startDrawing(ctx);
+  const ctx = setup(4);
+  const { drawer, guessers: [b, c, d] } = startDrawing(ctx);
   b.act('chat', { text: 'sad potato' });
   c.act('chat', { text: 'sad potato' });
   c.act('chat', { text: 'toilet' });
-  b.act('chat', { text: ctx.room.word.slice(0, -1) }); // a near typo, "sooo close"
+  // A near typo ("sooo close") from a player with no other guess: only the
+  // close rule can keep it out of the recap.
+  d.act('chat', { text: ctx.room.word.slice(0, -1) });
+  expect(ctx.room.wrongGuesses.at(-1)).toMatchObject({ id: d.id, close: true });
   drawer.act('skip');
   expect(ctx.room.reveal.recap.map((r) => r.text)).toEqual(['sad potato', 'toilet']);
   expect(new Set(ctx.room.reveal.recap.map((r) => r.by)).size).toBe(2);
+  expect(ctx.room.reveal.recap.some((r) => r.by === d.id)).toBe(false);
   expect(b.state().reveal.recap.length).toBe(2);
   advance(REVEAL_MS);
   expect(ctx.room.wrongGuesses).toEqual([]);
